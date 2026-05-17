@@ -1,6 +1,6 @@
 [project]
 name = "remove-ai-watermarks"
-version = "0.4.0"
+version = "0.4.1"
 description = "Remove visible and invisible AI watermarks from images (Gemini / Nano Banana, ChatGPT, Stable Diffusion)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,7 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 gpu = [
     "torch>=2.0.0",
-    "diffusers>=0.25.0",
+    "diffusers>=0.38.0",
     "transformers>=4.35.0",
     "accelerate>=0.25.0",
     "controlnet-aux>=0.0.9",
@@ -33,6 +33,13 @@ dev = [
     "pyright>=1.1.0",
 ]
 all = ["remove-ai-watermarks[gpu,dev]"]
+
+# diffusers 0.38.0 (security fix for GHSA-98h9-4798-4q5v) declares a dependency
+# on safetensors>=0.8.0rc0 — a pre-release. Allow pre-releases globally so the
+# resolver can satisfy that. Drop once diffusers publishes a release with a
+# stable safetensors pin (or once safetensors 0.8.0 stable is out).
+[tool.uv]
+prerelease = "allow"
 
 [project.scripts]
 remove-ai-watermarks = "remove_ai_watermarks.cli:main"
