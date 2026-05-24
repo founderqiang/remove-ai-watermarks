@@ -75,6 +75,10 @@ _OPENAI_CAVEAT = (
     "before the rollout carry C2PA without SynthID, so the SynthID verdict is 'likely'."
 )
 _IPTC_ONLY_CAVEAT = "The IPTC 'Made with AI' tag flags AI provenance but does not identify the specific platform."
+_INVISIBLE_WM_CAVEAT = (
+    "The open invisible watermark is fragile: it does not survive JPEG re-encoding "
+    "or resizing, so it confirms origin only on a pristine (un-re-encoded) file."
+)
 
 
 @dataclass
@@ -140,13 +144,26 @@ def _visible_sparkle(image_path: Path) -> float | None:
     return detect_sparkle_confidence(image_path)
 
 
-def identify(image_path: Path, *, check_visible: bool = True) -> ProvenanceReport:
+def _invisible_watermark(image_path: Path) -> str | None:
+    """Open invisible-watermark scheme name (SD/SDXL/FLUX) or None.
+
+    Optional: needs the imwatermark decoder (extra ``detect``). Returns None if
+    it is not installed or no known watermark decodes.
+    """
+    from remove_ai_watermarks.invisible_watermark import detect_invisible_watermark
+
+    return detect_invisible_watermark(image_path)
+
+
+def identify(image_path: Path, *, check_visible: bool = True, check_invisible: bool = True) -> ProvenanceReport:
     """Identify an image's origin platform and watermark inventory.
 
     Args:
         image_path: Path to the image (PNG, JPEG, WebP, or ISOBMFF container).
         check_visible: Also run the visible Gemini-sparkle detector (cv2). Set
             False for a pure-metadata, dependency-light scan.
+        check_invisible: Also decode open invisible watermarks (SD/SDXL/FLUX) via
+            the optional imwatermark library. No-op when it is not installed.
 
     Returns:
         A :class:`ProvenanceReport`. ``is_ai_generated`` is True when any AI
@@ -206,8 +223,18 @@ def identify(image_path: Path, *, check_visible: bool = True) -> ProvenanceRepor
         if platform is None:
             platform = "Stable Diffusion / local pipeline (Automatic1111, ComfyUI, InvokeAI)"
 
-    # ── Verdict so far (metadata) ───────────────────────────────────
-    ai_from_metadata = bool((has_c2pa and (c2pa_is_ai or synthid)) or iptc or local_keys)
+    # ── Open invisible watermark (SD / SDXL / FLUX, dwtDct) ──────────
+    # Public decoder, no key -- a definitive embedded signal on pristine files.
+    if check_invisible and (scheme := _invisible_watermark(image_path)) is not None:
+        signals.append(Signal("invisible_watermark", scheme, "high"))
+        watermarks.append(f"Open invisible watermark: {scheme}")
+        caveats.append(_INVISIBLE_WM_CAVEAT)
+        if platform is None:
+            platform = f"{scheme} (open DWT-DCT watermark)"
+
+    # ── Verdict so far (metadata + embedded watermark) ──────────────
+    invisible_wm = any(s.name == "invisible_watermark" for s in signals)
+    ai_from_metadata = bool((has_c2pa and (c2pa_is_ai or synthid)) or iptc or local_keys or invisible_wm)
 
     # ── Visible Gemini sparkle (fallback for stripped-metadata case) ─
     if check_visible and (conf := _visible_sparkle(image_path)) is not None and conf >= _SPARKLE_THRESHOLD:

@@ -26,13 +26,21 @@ gpu = [
     "ultralytics>=8.0.0",
     "color-matcher>=0.5.0",
 ]
+# Open invisible-watermark (imwatermark) decoder for detecting the DWT-DCT
+# watermarks embedded by Stable Diffusion / SDXL / FLUX. Optional because it
+# pulls non-headless opencv; identify() guards the import and skips the signal
+# when absent.
+detect = [
+    "invisible-watermark>=0.2.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
     "ruff>=0.4.0",
     "pyright>=1.1.0",
+    "invisible-watermark>=0.2.0",
 ]
-all = ["remove-ai-watermarks[gpu,dev]"]
+all = ["remove-ai-watermarks[gpu,detect,dev]"]
 
 # diffusers 0.38.0 (security fix for GHSA-98h9-4798-4q5v) declares a dependency
 # on safetensors>=0.8.0rc0 — a pre-release. Allow pre-releases globally so the

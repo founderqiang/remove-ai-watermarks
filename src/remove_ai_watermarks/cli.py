@@ -335,7 +335,11 @@ def cmd_metadata(
 
 @main.command("identify")
 @click.argument("source", type=click.Path(exists=True, path_type=Path))
-@click.option("--no-visible", is_flag=True, help="Skip the visible-sparkle detector (metadata-only, no cv2).")
+@click.option(
+    "--no-visible",
+    is_flag=True,
+    help="Skip pixel-domain detectors (visible sparkle + invisible watermark); metadata-only.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit the report as JSON instead of a table.")
 @click.pass_context
 def cmd_identify(ctx: click.Context, source: Path, no_visible: bool, as_json: bool) -> None:
@@ -351,7 +355,7 @@ def cmd_identify(ctx: click.Context, source: Path, no_visible: bool, as_json: bo
     from remove_ai_watermarks.identify import identify
 
     source = _validate_image(source)
-    report = identify(source, check_visible=not no_visible)
+    report = identify(source, check_visible=not no_visible, check_invisible=not no_visible)
 
     if as_json:
         click.echo(json.dumps(asdict(report), default=str, indent=2))

@@ -246,3 +246,38 @@ class TestReportSerializable:
         report = identify(tmp_png_with_ai_metadata, check_visible=False)
         dumped = json.dumps(asdict(report), default=str)
         assert "is_ai_generated" in dumped
+
+
+# ── Open invisible watermark (SD/SDXL/FLUX) integration ─────────────
+
+from remove_ai_watermarks.invisible_watermark import is_available as _wm_available  # noqa: E402
+
+
+@pytest.mark.skipif(not _wm_available(), reason="invisible-watermark not installed")
+class TestIdentifyInvisibleWatermark:
+    def _sdxl_watermarked(self, tmp_path: Path) -> Path:
+        import cv2
+        import numpy as np
+        from imwatermark import WatermarkEncoder
+
+        from remove_ai_watermarks.invisible_watermark import _BITS_48
+
+        bits = [int(b) for b in format(_BITS_48["Stable Diffusion XL"], "048b")]
+        enc = WatermarkEncoder()
+        enc.set_watermark("bits", bits)
+        img = np.random.default_rng(0).integers(0, 255, (512, 512, 3), dtype=np.uint8)
+        path = tmp_path / "sdxl.png"
+        cv2.imwrite(str(path), enc.encode(img, "dwtDct"))
+        return path
+
+    def test_sdxl_watermark_identified(self, tmp_path: Path):
+        r = identify(self._sdxl_watermarked(tmp_path), check_visible=False)
+        assert r.is_ai_generated is True
+        assert r.confidence == "high"
+        assert r.platform is not None
+        assert "Stable Diffusion XL" in r.platform
+        assert any("invisible watermark" in w.lower() for w in r.watermarks)
+
+    def test_check_invisible_false_skips(self, tmp_path: Path):
+        r = identify(self._sdxl_watermarked(tmp_path), check_visible=False, check_invisible=False)
+        assert not any(s.name == "invisible_watermark" for s in r.signals)

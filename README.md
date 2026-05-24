@@ -135,6 +135,13 @@ After installation the `remove-ai-watermarks` command is available system-wide.
 > ```bash
 > pip install -e ".[gpu]"   # or: uv pip install -e ".[gpu]"
 > ```
+>
+> To let `identify` decode the open Stable Diffusion / SDXL / FLUX invisible
+> watermarks, install the `detect` extra (adds the `invisible-watermark` decoder):
+>
+> ```bash
+> pip install -e ".[detect]"   # or: uv pip install -e ".[detect]"
+> ```
 
 #### Invisible watermark removal
 
@@ -182,9 +189,10 @@ remove-ai-watermarks batch ./images/ --mode all
 ```bash
 # Identify provenance: where an image was made + its watermark inventory.
 # Aggregates C2PA, IPTC "Made with AI", embedded SD/ComfyUI params, the
-# SynthID proxy, and the visible Gemini sparkle into one verdict. Reports
-# "unknown" (never "clean") when no signal is found, since stripped metadata
-# is not proof of a clean origin. Add --json for machine-readable output.
+# SynthID proxy, the visible Gemini sparkle, and (with the [detect] extra) the
+# open SD/SDXL/FLUX invisible watermark into one verdict. Reports "unknown"
+# (never "clean") when no signal is found, since stripped metadata is not proof
+# of a clean origin. Add --json for machine-readable output.
 remove-ai-watermarks identify image.png
 
 # Visible watermark only (Gemini / Nano Banana sparkle) — fast, offline
