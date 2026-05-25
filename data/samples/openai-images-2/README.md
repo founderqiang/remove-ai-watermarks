@@ -38,4 +38,4 @@ remove-ai-watermarks metadata amur-leopard.png --remove -o amur-leopard.clean.pn
 remove-ai-watermarks all amur-leopard.png -o amur-leopard.all.png --device mps
 ```
 
-Note: the diffusion step downscales to 768 px, which degrades fine text on text-heavy infographics like this one. Tracked as a known limitation; see project TODO.
+Note: the diffusion step runs at native resolution by default (no pre-downscale), so fine text on a text-heavy infographic like this one is preserved. Pass `--max-resolution N` only if a very large image OOMs the GPU/MPS (that reintroduces a lossy downscale then upscale round-trip).
