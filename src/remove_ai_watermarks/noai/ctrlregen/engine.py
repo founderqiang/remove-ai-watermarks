@@ -36,8 +36,9 @@ _HAS_COLOR_MATCHER = False
 _HAS_DIFFUSERS = False
 
 try:
-    from remove_ai_watermarks.noai.ctrlregen.pipeline import CustomCtrlRegenPipeline
     from diffusers import AutoencoderKL, ControlNetModel, UniPCMultistepScheduler
+
+    from remove_ai_watermarks.noai.ctrlregen.pipeline import CustomCtrlRegenPipeline
 
     _HAS_DIFFUSERS = True
 except ImportError:
