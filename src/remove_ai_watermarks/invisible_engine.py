@@ -42,6 +42,24 @@ def is_available() -> bool:
         return False
 
 
+def _target_size(width: int, height: int, max_resolution: int) -> tuple[int, int] | None:
+    """Compute the downscaled (width, height) for a long-side cap, or None for native.
+
+    Returns None when no pre-downscale is needed: ``max_resolution <= 0`` (native
+    resolution, the default that matches the raiw.cc backend -- see issue #10) or
+    the long side already fits the cap. Otherwise scales the long side down to
+    ``max_resolution`` preserving aspect ratio (integer-truncated, matching the
+    PIL ``resize`` call site). Pure function so the native-vs-downscale decision
+    is unit-testable without loading the diffusion model.
+    """
+    if max_resolution > 0 and max(width, height) > max_resolution:
+        ratio = max_resolution / max(width, height)
+        # Clamp the short side to >=1: extreme aspect ratios (e.g. 5000x3 capped
+        # at 1024) would otherwise truncate it to 0 and crash image.resize().
+        return (max(1, int(width * ratio)), max(1, int(height * ratio)))
+    return None
+
+
 class InvisibleEngine:
     """Remove invisible AI watermarks using diffusion model regeneration.
 
@@ -142,37 +160,26 @@ class InvisibleEngine:
         image = Image.open(image_path)
         image = ImageOps.exif_transpose(image)
         orig_size = image.size  # (width, height)
-        _tmp_path = None
 
-        if max_resolution > 0 and max(image.width, image.height) > max_resolution:
-            ratio = max_resolution / max(image.width, image.height)
-            new_size = (int(image.width * ratio), int(image.height * ratio))
+        # Optional long-side downscale; native resolution by default (issue #10).
+        target = _target_size(image.width, image.height, max_resolution)
+        if target is not None:
             if self._progress_callback:
                 self._progress_callback(
                     f"Downscaling {image.width}x{image.height} "
-                    f"to {new_size[0]}x{new_size[1]} "
+                    f"to {target[0]}x{target[1]} "
                     f"(max-resolution cap {max_resolution}px)..."
                 )
-            image = image.resize(new_size, Image.Resampling.LANCZOS)
+            image = image.resize(target, Image.Resampling.LANCZOS)
 
-            # Save to a temp file instead of overwriting the original
-            _tmp_fd, _tmp_str = tempfile.mkstemp(suffix=image_path.suffix)
-            _tmp_path = Path(_tmp_str)
-            image.save(_tmp_path)
-            import os as _os
-
-            _os.close(_tmp_fd)
-            image_path = _tmp_path
-        else:
-            # We must save the transposed image back to a tmp file if it was rotated
-            # otherwise WatermarkRemover will reload it without EXIF rotation!
-            _tmp_fd, _tmp_str = tempfile.mkstemp(suffix=image_path.suffix)
-            _tmp_path = Path(_tmp_str)
-            image.save(_tmp_path)
-            import os as _os
-
-            _os.close(_tmp_fd)
-            image_path = _tmp_path
+        # Always persist to a temp file, even without downscaling: WatermarkRemover
+        # reloads by path, so the EXIF-transposed pixels must be saved or rotation
+        # is lost. Cleaned up in the finally block via _tmp_path.
+        _tmp_fd, _tmp_str = tempfile.mkstemp(suffix=image_path.suffix)
+        _tmp_path = Path(_tmp_str)
+        image.save(_tmp_path)
+        os.close(_tmp_fd)
+        image_path = _tmp_path
 
         try:
             # Optional: Face protection (Phase 1 - Extraction)
@@ -253,7 +260,8 @@ class InvisibleEngine:
 
             return out_path
         finally:
-            if _tmp_path is not None and _tmp_path.exists():
+            # _tmp_path is always set above (we persist the image unconditionally).
+            if _tmp_path.exists():
                 _tmp_path.unlink()
 
     def remove_watermark_batch(
