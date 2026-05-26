@@ -42,6 +42,7 @@ If this tool saves you time, consider [sponsoring its development](https://githu
 | **Adobe Firefly** | — | — | ✅ Content Credentials (C2PA) | Metadata strip |
 | **Stability AI** (DreamStudio / Stable Image) | — | — | ✅ C2PA ("Stability AI Ltd") | Metadata strip |
 | **Microsoft Designer / Bing Image Creator** | — | ✅ SynthID via DALL-E backend (Designer) | ✅ C2PA (Bing runs MAI-Image, signed "Microsoft") | Metadata strip |
+| **xAI Grok (Aurora)** | — | — | ✅ EXIF signature scheme (no C2PA): `Signature:` blob + UUID `Artist` | Detected (`identify`); metadata strip |
 | **Midjourney** | — | — | ✅ EXIF + XMP (prompt, model, seed) | Metadata strip |
 | **Meta AI** | — | — | ✅ IPTC "Made with AI" (digitalSourceType) | Metadata strip (removes the label) |
 | **Doubao** (ByteDance) / China AIGC generators | — | — | ✅ TC260 `<TC260:AIGC>` XMP label (China's mandatory AI labeling) | Metadata strip |
@@ -87,11 +88,11 @@ image → encode to latent space (VAE) at native resolution
 
 By default the image is processed at its **native resolution** with no pre-downscale, matching the hosted raiw.cc backend (fal `fast-sdxl`, which is `stabilityai/stable-diffusion-xl-base-1.0` — the same checkpoint the CLI defaults to). At strength ~0.05 SDXL img2img does not need the input shrunk, and the old forced downscale-to-1024 then upscale-back round-trip was the main quality loss. Pass `--max-resolution N` to cap the long side only when a very large image runs out of GPU/MPS memory (it reintroduces that lossy round-trip).
 
-SDXL is the default since May 2026: empirically defeats SynthID v2 on Gemini 3 Pro outputs, where the older SD-1.5 pipeline at 768 px did not. The SD-1.5 path was removed once it was verified not to handle v2.
+SDXL is the default since May 2026: empirically defeats SynthID v2 on Gemini 3 Pro outputs, where the older SD-1.5 pipeline at 768 px did not. The SD-1.5 path was removed once it was verified not to handle v2. Note the scope: this defeats the SynthID *verifier*, which is not the same as being forensically indistinguishable from a real photo. Recent work ([arXiv:2605.09203](https://arxiv.org/abs/2605.09203)) shows watermark-removal pipelines leave detectable traces, so a separate "this image was processed" classifier can still flag the output.
 
 **Face Protection**: before diffusion, YOLO detects people in the image and extracts them. After diffusion, the original faces are blended back with a soft elliptical mask to prevent AI distortion of facial features.
 
-**Analog Humanizer**: optional film grain and chromatic aberration injection that makes the output indistinguishable from a photo of a screen, defeating AI-generated image classifiers.
+**Analog Humanizer**: optional film grain and chromatic aberration injection that mimics a photo of a screen, raising the bar for AI-generated image classifiers. (It frustrates generic classifiers but does not guarantee forensic invisibility — see the [arXiv:2605.09203](https://arxiv.org/abs/2605.09203) note above.)
 
 ### Stripping C2PA, EXIF, and "Made with AI" metadata
 
@@ -312,6 +313,8 @@ Watermarking and provenance for AI-generated content is now regulated in several
 | EU | AI Act, Article 50 | Transparency duties apply from **2 August 2026**. Legacy generative systems (placed on the market before that date) get a grandfathering period to **2 December 2026** for the Article 50(2) marking duty, under the Digital Omnibus (Commission proposal Nov 2025; co-legislator political agreement 7 May 2026). Article 50 guidelines and a marking Code of Practice are being finalised through 2026. | Removing mandated provenance markers with intent to deceive may be sanctioned under national implementations. |
 | US (federal) | COPIED Act | **Reintroduced April 2025; not enacted** (pending in the Senate). | If passed, would set NIST provenance standards and prohibit tampering with / removing provenance information. The tool itself is lawful; usage may not be. |
 | US (state) | CA AB 2655, TX SB 751, similar | TX SB 751 in force; **CA AB 2655 struck down** by a federal court (Aug 2025, Section 230 / First Amendment). | Content-specific (election deepfakes, sexual deepfakes). Not tool-specific. |
+| US (state) | CA AB 853 (amends the California AI Transparency Act) | Core provider duties operative **2 August 2026** (delayed from 1 January 2026); large platforms 1 January 2027; capture devices 1 January 2028. | Covered providers (1M+ monthly users) must embed a latent disclosure that is "permanent or extraordinarily difficult to remove" and offer a free detection tool. Removing that disclosure is what this tool does. |
+| South Korea | AI Framework Act (Basic Act on AI), Article 31 | In force since **January 2026** (one-year transition after promulgation). | Art. 31(3): AI output "difficult to distinguish from reality" must be labeled so users "clearly recognize" it; the draft Enforcement Decree accepts a machine-readable (invisible-watermark) label. Artistic/creative works get a presentation exception. |
 | China | Measures for Labeling AI-Generated Content (+ GB 45438-2025) | In force since **1 September 2025**. | Mandatory explicit (visible) + implicit (metadata) labels for AI content; tampering with or removing labels is prohibited. |
 | UK | Online Safety Act 2023 / Ofcom guidance | In force, but **no statutory AI-provenance or watermarking obligation**. | Ofcom encourages watermarking / provenance metadata as voluntary "attribution measures"; platform duties, not user obligations. |
 

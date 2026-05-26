@@ -16,6 +16,7 @@ from remove_ai_watermarks.metadata import (
     has_ai_metadata,
     remove_ai_metadata,
     synthid_source,
+    xai_signature,
 )
 
 # Real, committed C2PA sample images used to ground the SynthID-source tests.
@@ -408,6 +409,66 @@ class TestExifGenerator:
 
     def test_clean_image_is_none(self, tmp_clean_png: Path):
         assert exif_generator(tmp_clean_png) is None
+
+
+_FAKE_SIG = "A" * 120  # 64+ base64 chars; real Grok payloads are 300-1004
+_FAKE_UUID = "12345678-1234-1234-1234-123456789abc"
+
+
+def _grok_jpeg(tmp_path: Path, *, signature: str = _FAKE_SIG, artist: str = _FAKE_UUID) -> Path:
+    """Write a synthetic Grok-style JPEG: EXIF ImageDescription "Signature: ..."
+    + a UUID Artist. Synthetic on purpose -- never commit a real Grok image
+    (its Artist UUID + signature are user/session data; this is a public repo)."""
+    exif = piexif.dump(
+        {
+            "0th": {
+                piexif.ImageIFD.ImageDescription: f"Signature: {signature}".encode("latin1"),
+                piexif.ImageIFD.Artist: artist.encode("latin1"),
+            },
+            "Exif": {},
+            "GPS": {},
+            "1st": {},
+        }
+    )
+    path = tmp_path / "grok.jpg"
+    Image.new("RGB", (64, 64), (70, 80, 90)).save(path, exif=exif)
+    return path
+
+
+class TestXaiSignature:
+    """xAI / Grok's EXIF Signature + UUID-Artist provenance scheme."""
+
+    def test_signature_plus_uuid_detected(self, tmp_path: Path):
+        assert xai_signature(_grok_jpeg(tmp_path)) is True
+
+    def test_real_grok_sample_detected(self):
+        # Real committed Grok download (data/samples/grok-1.jpg); the EXIF
+        # Signature + UUID-Artist pair is the only AI signal it carries.
+        assert xai_signature(SAMPLES_DIR / "grok-1.jpg") is True
+
+    def test_signature_without_uuid_artist_not_flagged(self, tmp_path: Path):
+        # A "Signature:" blob but a non-UUID Artist is not the Grok pair.
+        assert xai_signature(_grok_jpeg(tmp_path, artist="John Doe")) is False
+
+    def test_bare_uuid_artist_not_flagged(self, tmp_path: Path):
+        # A UUID Artist alone (no Signature blob) must not false-positive.
+        exif = piexif.dump({"0th": {piexif.ImageIFD.Artist: _FAKE_UUID.encode()}, "Exif": {}, "GPS": {}, "1st": {}})
+        path = tmp_path / "uuid_only.jpg"
+        Image.new("RGB", (64, 64)).save(path, exif=exif)
+        assert xai_signature(path) is False
+
+    def test_short_signature_text_not_flagged(self, tmp_path: Path):
+        # Incidental short "Signature: ..." text is below the 64-char base64 bar.
+        assert xai_signature(_grok_jpeg(tmp_path, signature="ok")) is False
+
+    def test_clean_image_is_false(self, tmp_clean_png: Path):
+        assert xai_signature(tmp_clean_png) is False
+
+    def test_surfaced_in_get_ai_metadata(self, tmp_path: Path):
+        assert "xai_signature" in get_ai_metadata(_grok_jpeg(tmp_path))
+
+    def test_has_ai_metadata_true(self, tmp_path: Path):
+        assert has_ai_metadata(_grok_jpeg(tmp_path)) is True
 
 
 class TestAIGCLabel:

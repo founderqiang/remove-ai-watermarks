@@ -30,6 +30,7 @@ from remove_ai_watermarks.metadata import (
     aigc_label,
     exif_generator,
     get_ai_metadata,
+    xai_signature,
 )
 from remove_ai_watermarks.noai.c2pa import extract_c2pa_info
 from remove_ai_watermarks.noai.constants import C2PA_AI_TOOLS, C2PA_ISSUERS
@@ -246,6 +247,16 @@ def identify(image_path: Path, *, check_visible: bool = True, check_invisible: b
         if platform is None:
             platform = f"{generator_tag} (EXIF/XMP generator tag)"
 
+    # ── xAI / Grok EXIF signature scheme (no C2PA/SynthID/IPTC) ──────
+    # Grok's only provenance signal: EXIF ImageDescription "Signature: <base64>"
+    # + a UUID Artist. Distinct from exif_generator (which matches generator
+    # tokens); verified stable across 3 generations. See CLAUDE.md.
+    if xai_signature(image_path):
+        signals.append(Signal("xai_signature", "EXIF Signature blob + UUID Artist", "high"))
+        watermarks.append("xAI/Grok EXIF signature")
+        if platform is None:
+            platform = "xAI (Grok / Aurora)"
+
     # ── Open invisible watermark (SD / SDXL / FLUX, dwtDct) ──────────
     # Public decoder, no key -- a definitive embedded signal on pristine files.
     if check_invisible and (scheme := _invisible_watermark(image_path)) is not None:
@@ -258,8 +269,9 @@ def identify(image_path: Path, *, check_visible: bool = True, check_invisible: b
     # ── Verdict so far (metadata + embedded watermark) ──────────────
     invisible_wm = any(s.name == "invisible_watermark" for s in signals)
     exif_gen = any(s.name == "exif_generator" for s in signals)
+    xai_sig = any(s.name == "xai_signature" for s in signals)
     ai_from_metadata = bool(
-        (has_c2pa and (c2pa_is_ai or synthid)) or iptc or aigc or local_keys or invisible_wm or exif_gen
+        (has_c2pa and (c2pa_is_ai or synthid)) or iptc or aigc or local_keys or invisible_wm or exif_gen or xai_sig
     )
 
     # ── Visible Gemini sparkle (fallback for stripped-metadata case) ─

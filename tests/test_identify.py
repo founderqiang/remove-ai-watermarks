@@ -284,6 +284,33 @@ class TestIdentifyExifGenerator:
         assert any("generator tag" in w for w in r.watermarks)
 
 
+class TestIdentifyXaiSignature:
+    """xAI / Grok's EXIF Signature + UUID-Artist drives an xAI verdict."""
+
+    def test_grok_signature_attributed(self, tmp_path: Path):
+        import piexif
+        from PIL import Image
+
+        exif = piexif.dump(
+            {
+                "0th": {
+                    piexif.ImageIFD.ImageDescription: b"Signature: " + b"A" * 120,
+                    piexif.ImageIFD.Artist: b"12345678-1234-1234-1234-123456789abc",
+                },
+                "Exif": {},
+                "GPS": {},
+                "1st": {},
+            }
+        )
+        path = tmp_path / "grok.jpg"
+        Image.new("RGB", (64, 64), (70, 80, 90)).save(path, exif=exif)
+        r = identify(path, check_visible=False)
+        assert r.is_ai_generated is True
+        assert r.platform is not None
+        assert "xAI" in r.platform
+        assert any("xAI/Grok" in w for w in r.watermarks)
+
+
 # ── Open invisible watermark (SD/SDXL/FLUX) integration ─────────────
 
 from remove_ai_watermarks.invisible_watermark import is_available as _wm_available  # noqa: E402

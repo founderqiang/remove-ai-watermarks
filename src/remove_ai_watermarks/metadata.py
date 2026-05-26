@@ -152,7 +152,10 @@ def has_ai_metadata(image_path: Path) -> bool:
         return True
     if any(marker in data for marker in AIGC_MARKERS):
         return True
-    return any(marker in data for marker in IPTC_AI_MARKERS)
+    if any(marker in data for marker in IPTC_AI_MARKERS):
+        return True
+    # xAI / Grok: no C2PA/IPTC/XMP -- only the EXIF Signature + UUID-Artist pair.
+    return xai_signature(image_path)
 
 
 def aigc_label(image_path: Path) -> dict[str, str] | None:
@@ -274,6 +277,48 @@ def exif_generator(image_path: Path) -> str | None:
     return None
 
 
+def xai_signature(image_path: Path) -> bool:
+    """Detect xAI / Grok's EXIF provenance signature scheme.
+
+    Grok image downloads (Aurora model) carry no C2PA, XMP, SynthID, or IPTC --
+    their only provenance signal is a private EXIF pair: ``ImageDescription`` =
+    ``"Signature: <base64>"`` together with ``Artist`` = the image UUID. Verified
+    stable across three independent generations (2026-05-26; see CLAUDE.md). The
+    signature is xAI's and is not locally verifiable (no public key); detection
+    keys on this distinctive, low-false-positive shape, not on the signature's
+    validity. It survives only on the *original* JPEG download -- the web-UI
+    image is a re-encoded WebP that drops EXIF.
+    """
+    import re
+
+    try:
+        import piexif
+        from PIL import Image
+
+        with Image.open(image_path) as img:
+            exif_bytes = img.info.get("exif")
+        if not exif_bytes:
+            return False
+        tags = piexif.load(exif_bytes).get("0th", {})
+    except Exception as exc:  # unopenable format / malformed EXIF
+        logger.debug("xAI-signature EXIF read failed for %s: %s", image_path, exc)
+        return False
+
+    def _text(tag: int) -> str:
+        value = tags.get(tag)
+        return value.decode("latin1", "replace").strip() if isinstance(value, bytes) else ""
+
+    description = _text(piexif.ImageIFD.ImageDescription)
+    artist = _text(piexif.ImageIFD.Artist)
+    # A 64+ char base64 blob after "Signature:" is far beyond any incidental
+    # description text, and the UUID Artist makes the pair xAI-specific.
+    has_signature = re.match(r"Signature:\s*[A-Za-z0-9+/=]{64,}", description) is not None
+    is_uuid = (
+        re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", artist, re.IGNORECASE) is not None
+    )
+    return has_signature and is_uuid
+
+
 def get_ai_metadata(image_path: Path) -> dict[str, str]:
     """Extract AI-related metadata from an image.
 
@@ -328,6 +373,10 @@ def get_ai_metadata(image_path: Path) -> dict[str, str]:
     if aigc := aigc_label(image_path):
         producer = aigc.get("ContentProducer", "")
         result["aigc_label"] = f"China AIGC label (TC260){f'; producer {producer}' if producer else ''}"
+
+    # xAI / Grok EXIF signature scheme (its only provenance signal).
+    if xai_signature(image_path):
+        result.setdefault("xai_signature", "xAI/Grok EXIF signature (Artist UUID + Signature blob)")
     return result
 
 
