@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from pathlib import Path
 
 from remove_ai_watermarks.metadata import (
     AIGC_MARKERS,
@@ -76,6 +77,58 @@ def _iter_top_level_boxes(data: bytes) -> Iterator[tuple[int, int, bytes, int]]:
 def is_isobmff(data: bytes) -> bool:
     """Cheap sniff: ISOBMFF files start with an ``ftyp`` box."""
     return len(data) >= 8 and data[4:8] == b"ftyp"
+
+
+def scan_c2pa_region(path: str | Path, *, max_total: int = 4 * 1024 * 1024) -> bytes:
+    """Concatenated payloads of top-level ``uuid`` / ``jumb`` boxes in an ISOBMFF
+    file, found by seeking past other boxes (``mdat`` etc.) by size.
+
+    C2PA manifests and XMP packets (incl. AI labels) live in top-level ``uuid``
+    boxes; JPEG-XL uses ``jumb``. In a streaming / non-faststart MP4 the manifest
+    sits AFTER a multi-megabyte ``mdat``, so a fixed first-MB read misses it. This
+    walks box headers (8-16 bytes each) and seeks past payloads it does not need,
+    so it never loads ``mdat`` into memory and works on multi-GB files. Returns
+    the relevant box payloads (capped at ``max_total``), or ``b""`` for a
+    non-ISOBMFF file or on any read error.
+    """
+    collected = bytearray()
+    try:
+        with open(path, "rb") as f:
+            sniff = f.read(8)
+            if len(sniff) < 8 or sniff[4:8] != b"ftyp":
+                return b""
+            f.seek(0, 2)
+            file_size = f.tell()
+            pos = 0
+            while pos + 8 <= file_size and len(collected) < max_total:
+                f.seek(pos)
+                header = f.read(8)
+                if len(header) < 8:
+                    break
+                size32 = struct.unpack(">I", header[:4])[0]
+                box_type = header[4:8]
+                payload_off = pos + 8
+                if size32 == 1:
+                    ext = f.read(8)
+                    if len(ext) < 8:
+                        break
+                    size = struct.unpack(">Q", ext)[0]
+                    payload_off = pos + 16
+                elif size32 == 0:
+                    size = file_size - pos
+                else:
+                    size = size32
+                if size < (payload_off - pos) or pos + size > file_size:
+                    break
+                if box_type in C2PA_BOX_TYPES:
+                    f.seek(payload_off)
+                    to_read = min(pos + size - payload_off, max_total - len(collected))
+                    if to_read > 0:
+                        collected += f.read(to_read)
+                pos += size
+    except OSError:
+        return b""
+    return bytes(collected)
 
 
 def strip_c2pa_boxes(data: bytes) -> tuple[bytes, int]:

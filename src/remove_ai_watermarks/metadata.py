@@ -132,6 +132,28 @@ def _is_ai_key(key: str) -> bool:
     return any(kw in key_lower for kw in AI_KEYWORDS)
 
 
+def scan_head(image_path: Path, size: int = 1024 * 1024) -> bytes:
+    """First ``size`` bytes of the file, plus -- for ISOBMFF containers -- the
+    payloads of any provenance (``uuid`` / ``jumb``) boxes found beyond that
+    window by seeking past large boxes like ``mdat``.
+
+    This is the shared input for every C2PA / AIGC / IPTC byte scan. The
+    ISOBMFF extension catches a manifest placed AFTER the media data in a
+    streaming / non-faststart MP4, which a fixed first-MB read would miss. For
+    non-ISOBMFF inputs it is exactly ``f.read(size)`` -- behavior-neutral.
+    """
+    with open(image_path, "rb") as f:
+        head = f.read(size)
+    # Lazy import: isobmff imports this module's constants at top level.
+    from remove_ai_watermarks.noai import isobmff
+
+    if isobmff.is_isobmff(head):
+        region = isobmff.scan_c2pa_region(image_path)
+        if region:
+            head += region
+    return head
+
+
 def has_ai_metadata(image_path: Path) -> bool:
     """Check if an image contains AI-generation metadata.
 
@@ -167,9 +189,8 @@ def has_ai_metadata(image_path: Path) -> bool:
         pass
 
     # Binary scan covers C2PA (PNG caBX, JPEG APP11, AVIF/HEIF/JXL uuid boxes)
-    # and IPTC AI markers in XMP. Read only the first 512KB to bound memory.
-    with open(image_path, "rb") as f:
-        data = f.read(512 * 1024)
+    # and IPTC AI markers in XMP. First 512KB (plus late ISOBMFF provenance boxes).
+    data = scan_head(image_path, 512 * 1024)
     if b"c2pa" in data.lower() or b"C2PA" in data:
         return True
     if C2PA_UUID in data:
@@ -196,8 +217,7 @@ def aigc_label(image_path: Path) -> dict[str, str] | None:
     import json
     import re
 
-    with open(image_path, "rb") as f:
-        data = f.read(1024 * 1024)
+    data = scan_head(image_path)
     match = re.search(rb"<TC260:AIGC>(.*?)</TC260:AIGC>", data, re.DOTALL)
     if not match:
         return None
@@ -219,8 +239,7 @@ def iptc_ai_system(image_path: Path) -> str | None:
     extractable, otherwise the literal ``"fields present"``. Container-agnostic
     raw-byte scan; handles both XMP element and attribute serializations.
     """
-    with open(image_path, "rb") as f:
-        data = f.read(1024 * 1024)
+    data = scan_head(image_path)
     if not any(marker in data for marker in IPTC_AI_FIELD_MARKERS):
         return None
     match = re.search(rb"AISystemUsed[=:\s]*[\"'>]\s*([^<\"']{1,120})", data)
@@ -259,8 +278,7 @@ def synthid_source(image_path: Path) -> str | None:
     # Non-PNG containers (JPEG APP11, WebP, AVIF/HEIF/JXL uuid box) keep the
     # C2PA manifest where the PNG parser can't reach it. Binary-scan for the
     # same signal: a C2PA manifest from a SynthID-using issuer on AI content.
-    with open(image_path, "rb") as f:
-        data = f.read(1024 * 1024)
+    data = scan_head(image_path)
     has_c2pa = b"c2pa" in data.lower() or C2PA_UUID in data
     # Matches both "trainedAlgorithmicMedia" and "compositeWithTrainedAlgorithmicMedia".
     ai_source = b"trainedAlgorithmicMedia" in data or b"TrainedAlgorithmicMedia" in data
@@ -311,8 +329,7 @@ def exif_generator(image_path: Path) -> str | None:
 
     # XMP CreatorTool: text, container-agnostic (covers HEIF/JXL via raw scan).
     try:
-        with open(image_path, "rb") as f:
-            head = f.read(1024 * 1024)
+        head = scan_head(image_path)
         for match in re.finditer(rb"CreatorTool[>\"'=\s]{1,4}([^<\"']{1,80})", head):
             candidates.append(match.group(1).decode("latin1", "replace"))
     except Exception as exc:
@@ -467,8 +484,7 @@ def get_ai_metadata(image_path: Path) -> dict[str, str]:
     if "synthid_watermark" not in result and (vendor := synthid_source(image_path)):
         result.setdefault("synthid_watermark", synthid_verdict(vendor))
     if "soft_binding" not in result:
-        with open(image_path, "rb") as f:
-            head = f.read(1024 * 1024)
+        head = scan_head(image_path)
         if vendors := soft_binding_vendors_in(head):
             result["soft_binding"] = ", ".join(vendors)
 
@@ -507,10 +523,18 @@ def _strip_with_ffmpeg(source_path: Path, output_path: Path) -> Path:
         )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        ffmpeg, "-y", "-loglevel", "error",
-        "-i", str(source_path),
-        "-map_metadata", "-1", "-map_chapters", "-1",
-        "-c", "copy",
+        ffmpeg,
+        "-y",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source_path),
+        "-map_metadata",
+        "-1",
+        "-map_chapters",
+        "-1",
+        "-c",
+        "copy",
         str(output_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)  # noqa: S603

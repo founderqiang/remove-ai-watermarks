@@ -631,6 +631,11 @@ _MP4_FTYP = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"
 _MP4_MDAT = b"\x00\x00\x00\x10mdat" + b"videodat"
 
 
+def _box(box_type: bytes, payload: bytes) -> bytes:
+    """Build a 32-bit-size ISOBMFF box: [size:4][type:4][payload]."""
+    return (8 + len(payload)).to_bytes(4, "big") + box_type + payload
+
+
 class TestVideoC2pa:
     """C2PA in MP4 (ISOBMFF) -- detect + strip, reusing the image box walker."""
 
@@ -652,6 +657,59 @@ class TestVideoC2pa:
         remove_ai_metadata(src, out)
         assert out.read_bytes() == _MP4_FTYP + _MP4_MDAT
         assert has_ai_metadata(out) is False
+
+
+class TestLateProvenanceBox:
+    """A C2PA / provenance box placed AFTER a large mdat (streaming / non-faststart
+    MP4) must still be detected -- the fixed first-MB scan would miss it."""
+
+    def _mp4_late_c2pa(self, tmp_path: Path, gap: int = 1_500_000) -> Path:
+        from remove_ai_watermarks.metadata import C2PA_UUID
+
+        big_mdat = _box(b"mdat", b"\x00" * gap)  # > 1 MB pushes the manifest past the scan window
+        manifest = C2PA_UUID + b"OpenAI jumbf c2pa ... trainedAlgorithmicMedia ..."
+        p = tmp_path / "stream.mp4"
+        p.write_bytes(_MP4_FTYP + big_mdat + _box(b"uuid", manifest))
+        return p
+
+    def test_scan_c2pa_region_finds_late_box(self, tmp_path: Path):
+        from remove_ai_watermarks.metadata import C2PA_UUID
+        from remove_ai_watermarks.noai.isobmff import scan_c2pa_region
+
+        region = scan_c2pa_region(self._mp4_late_c2pa(tmp_path))
+        assert C2PA_UUID in region
+        assert b"trainedAlgorithmicMedia" in region
+
+    def test_fixed_window_would_have_missed_it(self, tmp_path: Path):
+        # Documents the regression the box walk fixes: the manifest is beyond 1 MB.
+        from remove_ai_watermarks.metadata import C2PA_UUID
+
+        p = self._mp4_late_c2pa(tmp_path)
+        assert C2PA_UUID not in p.read_bytes()[: 1024 * 1024]
+
+    def test_scan_head_includes_late_box(self, tmp_path: Path):
+        from remove_ai_watermarks.metadata import C2PA_UUID, scan_head
+
+        assert C2PA_UUID in scan_head(self._mp4_late_c2pa(tmp_path))
+
+    def test_has_ai_metadata_detects_late_manifest(self, tmp_path: Path):
+        assert has_ai_metadata(self._mp4_late_c2pa(tmp_path)) is True
+
+    def test_scan_c2pa_region_non_isobmff_is_empty(self, tmp_path: Path):
+        from remove_ai_watermarks.noai.isobmff import scan_c2pa_region
+
+        p = tmp_path / "not.bin"
+        p.write_bytes(b"\x89PNG\r\n\x1a\n not an isobmff file")
+        assert scan_c2pa_region(p) == b""
+
+    def test_front_placed_manifest_still_detected(self, tmp_path: Path):
+        # Regression: a faststart MP4 (manifest before mdat) is unaffected.
+        from remove_ai_watermarks.metadata import C2PA_UUID
+
+        manifest = C2PA_UUID + b"OpenAI ... trainedAlgorithmicMedia ..."
+        p = tmp_path / "front.mp4"
+        p.write_bytes(_MP4_FTYP + _box(b"uuid", manifest) + _box(b"mdat", b"\x00" * 100))
+        assert has_ai_metadata(p) is True
 
 
 class TestIsobmffMetadataRemoval:
@@ -718,9 +776,17 @@ class TestFfmpegMetadataStrip:
     def _wav_with_tag(self, path: Path, tag: str = "Suno AI") -> None:
         subprocess.run(  # noqa: S603
             [
-                shutil.which("ffmpeg"), "-y", "-loglevel", "error",
-                "-f", "lavfi", "-i", "sine=frequency=440:duration=0.1",
-                "-metadata", f"title={tag}", str(path),
+                shutil.which("ffmpeg"),
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=0.1",
+                "-metadata",
+                f"title={tag}",
+                str(path),
             ],
             check=True,
         )

@@ -32,6 +32,7 @@ from remove_ai_watermarks.metadata import (
     exif_generator,
     get_ai_metadata,
     iptc_ai_system,
+    scan_head,
     xai_signature,
 )
 from remove_ai_watermarks.noai.c2pa import cbor_text_after, extract_c2pa_info, soft_binding_vendors_in
@@ -332,8 +333,9 @@ def identify(image_path: Path, *, check_visible: bool = True, check_invisible: b
 
     # First MB covers C2PA (PNG caBX, JPEG APP11, AVIF/HEIF/JXL uuid box) and
     # IPTC markers for the non-PNG path where extract_c2pa_info returns {}.
-    with open(image_path, "rb") as f:
-        head = f.read(_SCAN_BYTES)
+    # scan_head also seeks out late ISOBMFF provenance boxes (manifest after a
+    # large mdat in a streaming MP4) that a fixed first-MB read would miss.
+    head = scan_head(image_path, _SCAN_BYTES)
 
     signals: list[Signal] = []
     watermarks: list[str] = []
