@@ -579,6 +579,9 @@ class TestSoftBinding:
         assert soft_binding_vendors_in(b"...alg...com.adobe.trustmark.P...") == ["Adobe TrustMark"]
         assert soft_binding_vendors_in(b"com.digimarc.validate.1") == ["Digimarc"]
         assert soft_binding_vendors_in(b"ai.steg.api blah") == ["Steg.AI"]
+        # Registry-verified vendors added in v0.6.x.
+        assert soft_binding_vendors_in(b"ai.trufo.gen1.image") == ["Trufo"]
+        assert soft_binding_vendors_in(b"io.iscc.v0") == ["ISCC (content code)"]
 
     def test_vendors_in_empty_when_absent(self):
         from remove_ai_watermarks.noai.c2pa import soft_binding_vendors_in

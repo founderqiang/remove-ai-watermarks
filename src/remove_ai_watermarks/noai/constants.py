@@ -132,6 +132,7 @@ C2PA_AI_TOOLS = {
 # the rest (Digimarc, Imatag, Steg.AI, etc.) are proprietary oracle-only decoders.
 C2PA_SOFT_BINDINGS = {
     b"com.adobe.trustmark": "Adobe TrustMark",
+    b"com.adobe.icn": "Adobe (content fingerprint)",
     b"com.digimarc": "Digimarc",
     b"com.imatag.lamark": "Imatag (Lamark)",
     b"ai.steg": "Steg.AI",
@@ -139,7 +140,15 @@ C2PA_SOFT_BINDINGS = {
     b"com.microsoft.wavmark": "Microsoft WavMark",
     b"com.verimatrix": "Verimatrix",
     b"com.nagra.nexguard": "NAGRA NexGuard",
-    b"com.aiwatermark": "AIWatermark",
+    b"com.aiwatermark": "AIWatermark (Meta PixelSeal)",
+    b"ai.trufo": "Trufo",
+    b"app.overlai": "Overlai",
+    b"com.markany": "MarkAny",
+    b"com.mentaport": "Mentaport",
+    b"es.lumatrace": "LumaTrace",
+    b"ai.verda": "VerdaAI",
+    b"ai.contentlens": "ContentLens",
+    b"io.iscc": "ISCC (content code)",
 }
 
 # Lowercased substrings that mark an AI generator when found in an EXIF
