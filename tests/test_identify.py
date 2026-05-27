@@ -337,6 +337,25 @@ class TestIdentifyIptcAi:
         assert "Gemini" in r.platform
 
 
+class TestIdentifyC2paClaimGenerator:
+    """C2PA attribution prefers claim_generator over incidental issuer tokens."""
+
+    def test_claim_generator_beats_incidental_tokens(self, tmp_path: Path):
+        # Real manifests mention timestamp authorities / XMP toolkits, so
+        # "Adobe"/"Google"/"Truepic" appear incidentally; the claim generator
+        # (a Leica camera) must win the platform attribution. Regression guard
+        # for the real-sample mis-attribution (Leica->Truepic, Nikon->Adobe).
+        gen = b"M11-P/2.0.1 lc_c2pa"
+        blob = (
+            b"\xff\xd8\xff\xe1 c2pa.claim jumbf Adobe Google Truepic "
+            b"claim_generator" + bytes([0x60 + len(gen)]) + gen + b" \xff\xd9"
+        )
+        p = tmp_path / "leica_like.jpg"
+        p.write_bytes(blob)
+        r = identify(p, check_visible=False, check_invisible=False)
+        assert r.platform == "Leica (camera, C2PA capture)"
+
+
 # ── Open invisible watermark (SD/SDXL/FLUX) integration ─────────────
 
 from remove_ai_watermarks.invisible_watermark import is_available as _wm_available  # noqa: E402

@@ -131,7 +131,7 @@ def extract_c2pa_info(image_path: Path) -> dict[str, Any]:
     return c2pa_info
 
 
-def _cbor_text_after(payload: bytes, key: bytes) -> str | None:
+def cbor_text_after(payload: bytes, key: bytes) -> str | None:
     """Return the CBOR text-string immediately following ``key`` in ``payload``.
 
     Handles CBOR major-type 3 length prefixes: direct (0x60-0x77), 1-byte
@@ -212,9 +212,9 @@ def _parse_c2pa_chunk(chunk_data: bytes, c2pa_info: dict[str, Any]) -> None:
     # Guard with isprintable(): on some manifests (e.g. Microsoft Designer) the
     # first ``name`` key precedes a binary field (a hash), not the generator
     # string, which would otherwise surface as control-char garbage.
-    if (generator := _cbor_text_after(chunk_data, b"name")) and generator.isprintable():
+    if (generator := cbor_text_after(chunk_data, b"name")) and generator.isprintable():
         c2pa_info["claim_generator"] = generator
-    if (spec := _cbor_text_after(chunk_data, b"specVersion")) and spec.isprintable():
+    if (spec := cbor_text_after(chunk_data, b"specVersion")) and spec.isprintable():
         c2pa_info["c2pa_spec"] = spec
 
     # Find actions

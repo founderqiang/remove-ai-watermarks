@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from remove_ai_watermarks.noai.c2pa import (
-    _cbor_text_after,
     _parse_c2pa_chunk,
+    cbor_text_after,
     extract_c2pa_chunk,
     extract_c2pa_info,
     has_c2pa_metadata,
@@ -193,36 +193,36 @@ class TestC2PAInjectValidation:
 
 
 class TestCborTextAfter:
-    """_cbor_text_after handles the three CBOR text-string length prefixes."""
+    """cbor_text_after handles the three CBOR text-string length prefixes."""
 
     def test_direct_length(self):
         # major-type 3, direct length (0x60 + len). "abc" -> 0x63.
         payload = b"name" + bytes([0x63]) + b"abc"
-        assert _cbor_text_after(payload, b"name") == "abc"
+        assert cbor_text_after(payload, b"name") == "abc"
 
     def test_one_byte_length(self):
         s = b"x" * 30
         payload = b"name" + bytes([0x78, 30]) + s
-        assert _cbor_text_after(payload, b"name") == "x" * 30
+        assert cbor_text_after(payload, b"name") == "x" * 30
 
     def test_two_byte_length(self):
         s = b"y" * 300
         payload = b"name" + bytes([0x79]) + struct.pack(">H", 300) + s
-        assert _cbor_text_after(payload, b"name") == "y" * 300
+        assert cbor_text_after(payload, b"name") == "y" * 300
 
     def test_key_not_found_returns_none(self):
-        assert _cbor_text_after(b"nothing here", b"name") is None
+        assert cbor_text_after(b"nothing here", b"name") is None
 
     def test_key_at_end_returns_none(self):
-        assert _cbor_text_after(b"prefixname", b"name") is None
+        assert cbor_text_after(b"prefixname", b"name") is None
 
     def test_invalid_head_returns_none(self):
         # 0x00 is not a text-string head.
-        assert _cbor_text_after(b"name" + bytes([0x00]) + b"abc", b"name") is None
+        assert cbor_text_after(b"name" + bytes([0x00]) + b"abc", b"name") is None
 
     def test_latin1_fallback_on_invalid_utf8(self):
         payload = b"name" + bytes([0x61]) + b"\xff"  # len 1, invalid utf-8
-        assert _cbor_text_after(payload, b"name") is not None
+        assert cbor_text_after(payload, b"name") is not None
 
 
 class TestSynthIDVerdict:

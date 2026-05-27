@@ -34,7 +34,7 @@ from remove_ai_watermarks.metadata import (
     iptc_ai_system,
     xai_signature,
 )
-from remove_ai_watermarks.noai.c2pa import extract_c2pa_info, soft_binding_vendors_in
+from remove_ai_watermarks.noai.c2pa import cbor_text_after, extract_c2pa_info, soft_binding_vendors_in
 from remove_ai_watermarks.noai.constants import C2PA_AI_TOOLS, C2PA_ISSUERS
 
 if TYPE_CHECKING:
@@ -127,6 +127,35 @@ def _ai_tools_in(data: bytes) -> list[str]:
     return sorted({name for sig, name in C2PA_AI_TOOLS.items() if sig in data})
 
 
+# C2PA claim-generator substring -> platform. The claim generator names what
+# PRODUCED the asset, so it is far more reliable than byte-scanning the manifest
+# for an issuer name (which also matches incidental mentions: a timestamp
+# authority like "Truepic" in a Leica chain, an XMP-toolkit "Adobe" string in a
+# Nikon file, or "Google" in a URL -- all verified on real samples). Ordered:
+# camera tokens first so a device wins over an incidental tool name (Nikon's
+# real sample claim generator also contains "Adobe_MAX"). Camera C2PA marks
+# CAPTURE authenticity, not AI, so these never assert is_ai on their own (the
+# verdict still comes from the digital-source-type). Only tokens verified
+# against a real signed file are listed; add more as samples are captured.
+_CLAIM_GENERATOR_PLATFORM: tuple[tuple[str, str], ...] = (
+    ("lc_c2pa", "Leica (camera, C2PA capture)"),
+    ("leica", "Leica (camera, C2PA capture)"),
+    ("nikon", "Nikon (camera, C2PA capture)"),
+    ("truepic", "Truepic Lens (verified capture)"),
+)
+
+
+def _platform_from_generator(generator: str | None) -> str | None:
+    """Map a C2PA claim-generator string to a device/platform, or None."""
+    if not generator:
+        return None
+    low = generator.lower()
+    for token, platform in _CLAIM_GENERATOR_PLATFORM:
+        if token in low:
+            return platform
+    return None
+
+
 def _attribute_platform(issuers: list[str]) -> str | None:
     """Map a set of C2PA issuer names to a human-readable generating platform."""
     joined = " ".join(issuers)
@@ -205,12 +234,20 @@ def identify(image_path: Path, *, check_visible: bool = True, check_invisible: b
     # ── C2PA Content Credentials ────────────────────────────────────
     has_c2pa = bool(info) or b"c2pa" in head.lower() or C2PA_UUID in head
     issuers = [info["issuer"]] if info.get("issuer") else _issuers_in(head)
-    platform = _attribute_platform(issuers) if has_c2pa else None
     c2pa_is_ai = "trainedAlgorithmicMedia" in info.get("source_type", "") or any(
         m in head for m in (b"trainedAlgorithmicMedia", b"compositeWithTrainedAlgorithmicMedia")
     )
-    # Generator: structured for PNG, binary-scanned for other containers.
-    generator = info.get("claim_generator") or (", ".join(tools) if (tools := _ai_tools_in(head)) else None)
+    # Generator: structured for PNG, CBOR-scanned for other containers. The claim
+    # generator is the authoritative "what produced this", so it drives platform
+    # attribution; the issuer byte-scan is only the fallback (it matches
+    # incidental chain/namespace mentions -- on real samples Leica mis-read as
+    # Truepic, Nikon as Adobe, Truepic as Google until claim-generator took over).
+    generator = (
+        info.get("claim_generator")
+        or cbor_text_after(head, b"claim_generator")
+        or (", ".join(tools) if (tools := _ai_tools_in(head)) else None)
+    )
+    platform = (_platform_from_generator(generator) or _attribute_platform(issuers)) if has_c2pa else None
     if has_c2pa:
         detail = ", ".join(filter(None, [", ".join(issuers), generator, info.get("source_type")]))
         signals.append(Signal("c2pa", detail or "C2PA manifest present", "high"))
