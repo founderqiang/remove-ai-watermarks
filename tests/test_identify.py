@@ -337,23 +337,28 @@ class TestIdentifyIptcAi:
         assert "Gemini" in r.platform
 
 
-class TestIdentifyC2paClaimGenerator:
-    """C2PA attribution prefers claim_generator over incidental issuer tokens."""
+class TestIdentifyC2paDevice:
+    """A distinctive C2PA device token wins platform attribution over incidental
+    issuer-name mentions (regression guard for real-sample mis-attribution:
+    Leica->Truepic, Nikon->Adobe, Pixel->Google Gemini)."""
 
-    def test_claim_generator_beats_incidental_tokens(self, tmp_path: Path):
-        # Real manifests mention timestamp authorities / XMP toolkits, so
-        # "Adobe"/"Google"/"Truepic" appear incidentally; the claim generator
-        # (a Leica camera) must win the platform attribution. Regression guard
-        # for the real-sample mis-attribution (Leica->Truepic, Nikon->Adobe).
-        gen = b"M11-P/2.0.1 lc_c2pa"
-        blob = (
-            b"\xff\xd8\xff\xe1 c2pa.claim jumbf Adobe Google Truepic "
-            b"claim_generator" + bytes([0x60 + len(gen)]) + gen + b" \xff\xd9"
-        )
+    def test_leica_token_beats_incidental_tokens(self, tmp_path: Path):
+        # "Adobe"/"Google"/"Truepic" appear incidentally; Leica's lc_c2pa wins.
+        blob = b"\xff\xd8\xff\xe1 c2pa.claim jumbf Adobe Google Truepic lc_c2pa \xff\xd9"
         p = tmp_path / "leica_like.jpg"
         p.write_bytes(blob)
         r = identify(p, check_visible=False, check_invisible=False)
         assert r.platform == "Leica (camera, C2PA capture)"
+
+    def test_pixel_camera_cert_beats_incidental_google(self, tmp_path: Path):
+        # Pixel's cert CN is "Pixel Camera"; "Google LLC" appears as the cert org
+        # but must NOT yield "Google (Gemini / Imagen)" -- it is a camera capture.
+        blob = b"\xff\xd8\xff\xe1 c2pa.claim jumbf Google LLC Adobe Pixel Camera \xff\xd9"
+        p = tmp_path / "pixel_like.jpg"
+        p.write_bytes(blob)
+        r = identify(p, check_visible=False, check_invisible=False)
+        assert r.platform == "Google Pixel (camera, C2PA capture)"
+        assert r.is_ai_generated is None  # camera capture, not AI
 
 
 # ── Open invisible watermark (SD/SDXL/FLUX) integration ─────────────

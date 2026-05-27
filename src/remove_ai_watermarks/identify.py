@@ -127,31 +127,35 @@ def _ai_tools_in(data: bytes) -> list[str]:
     return sorted({name for sig, name in C2PA_AI_TOOLS.items() if sig in data})
 
 
-# C2PA claim-generator substring -> platform. The claim generator names what
-# PRODUCED the asset, so it is far more reliable than byte-scanning the manifest
-# for an issuer name (which also matches incidental mentions: a timestamp
-# authority like "Truepic" in a Leica chain, an XMP-toolkit "Adobe" string in a
-# Nikon file, or "Google" in a URL -- all verified on real samples). Ordered:
-# camera tokens first so a device wins over an incidental tool name (Nikon's
-# real sample claim generator also contains "Adobe_MAX"). Camera C2PA marks
-# CAPTURE authenticity, not AI, so these never assert is_ai on their own (the
-# verdict still comes from the digital-source-type). Only tokens verified
-# against a real signed file are listed; add more as samples are captured.
-_CLAIM_GENERATOR_PLATFORM: tuple[tuple[str, str], ...] = (
-    ("lc_c2pa", "Leica (camera, C2PA capture)"),
-    ("leica", "Leica (camera, C2PA capture)"),
-    ("nikon", "Nikon (camera, C2PA capture)"),
-    ("truepic", "Truepic Lens (verified capture)"),
+# Distinctive C2PA device/camera tokens (cert CN, cert org, or claim-generator
+# substrings) scanned in the manifest bytes -> platform. This is more reliable
+# than mapping an issuer name (which also matches incidental mentions: a
+# timestamp authority like "Truepic" in a Leica chain, an XMP-toolkit "Adobe"
+# string in a Nikon file, or "Google" in a Pixel camera's cert -- all verified
+# on real samples), and more robust than parsing the claim generator (which
+# lives under varying CBOR keys, e.g. `claim_generator` vs `claim_generator_info`,
+# and is absent on the Pixel sample where only the cert CN "Pixel Camera"
+# identifies it). Camera C2PA marks CAPTURE authenticity, not AI, so these never
+# assert is_ai on their own (the verdict still comes from the digital-source-type:
+# the Pixel sample carries `computationalCapture`, not `trainedAlgorithmicMedia`).
+# Only tokens verified against a real signed file are listed (Leica, Nikon,
+# Truepic, Google Pixel); add Sony/Canon/Samsung/Bria as real samples are captured.
+_DEVICE_C2PA_PLATFORM: tuple[tuple[bytes, str], ...] = (
+    (b"lc_c2pa", "Leica (camera, C2PA capture)"),
+    (b"Leica Camera", "Leica (camera, C2PA capture)"),
+    (b"NIKON", "Nikon (camera, C2PA capture)"),
+    (b"Pixel Camera", "Google Pixel (camera, C2PA capture)"),
+    # "Truepic_Lens" (from the Lens SDK claim generator), NOT bare "Truepic" --
+    # Truepic is a C2PA signing authority whose name appears in the trust chain
+    # of unrelated manifests (e.g. OpenAI), so the bare token mis-attributes.
+    (b"Truepic_Lens", "Truepic Lens (verified capture)"),
 )
 
 
-def _platform_from_generator(generator: str | None) -> str | None:
-    """Map a C2PA claim-generator string to a device/platform, or None."""
-    if not generator:
-        return None
-    low = generator.lower()
-    for token, platform in _CLAIM_GENERATOR_PLATFORM:
-        if token in low:
+def _device_platform(head: bytes) -> str | None:
+    """Map a distinctive C2PA device/camera token in the manifest bytes to a platform."""
+    for token, platform in _DEVICE_C2PA_PLATFORM:
+        if token in head:
             return platform
     return None
 
@@ -237,17 +241,20 @@ def identify(image_path: Path, *, check_visible: bool = True, check_invisible: b
     c2pa_is_ai = "trainedAlgorithmicMedia" in info.get("source_type", "") or any(
         m in head for m in (b"trainedAlgorithmicMedia", b"compositeWithTrainedAlgorithmicMedia")
     )
-    # Generator: structured for PNG, CBOR-scanned for other containers. The claim
-    # generator is the authoritative "what produced this", so it drives platform
-    # attribution; the issuer byte-scan is only the fallback (it matches
-    # incidental chain/namespace mentions -- on real samples Leica mis-read as
-    # Truepic, Nikon as Adobe, Truepic as Google until claim-generator took over).
+    # Generator string (for the signal detail): structured for PNG, CBOR-scanned
+    # for other containers. Best-effort -- some manifests key it as
+    # `claim_generator_info` (Pixel), so this can be None even when a device is
+    # identified by `_device_platform`.
     generator = (
         info.get("claim_generator")
         or cbor_text_after(head, b"claim_generator")
         or (", ".join(tools) if (tools := _ai_tools_in(head)) else None)
     )
-    platform = (_platform_from_generator(generator) or _attribute_platform(issuers)) if has_c2pa else None
+    # Platform: a distinctive device/camera token in the manifest wins (it is the
+    # signer/producer), with the issuer byte-scan only as fallback. The issuer
+    # scan alone mis-attributed real samples (Leica->Truepic timestamp authority,
+    # Nikon->Adobe namespace, Pixel->Google Gemini) -- the device scan fixes that.
+    platform = (_device_platform(head) or _attribute_platform(issuers)) if has_c2pa else None
     if has_c2pa:
         detail = ", ".join(filter(None, [", ".join(issuers), generator, info.get("source_type")]))
         signals.append(Signal("c2pa", detail or "C2PA manifest present", "high"))
