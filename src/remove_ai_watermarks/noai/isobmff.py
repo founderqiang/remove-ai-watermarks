@@ -17,6 +17,7 @@ Reference: ISO/IEC 14496-12 (ISOBMFF) and C2PA 2.1 spec §11.
 
 from __future__ import annotations
 
+import re
 import struct
 from typing import TYPE_CHECKING
 
@@ -42,6 +43,12 @@ C2PA_BOX_TYPES: frozenset[bytes] = frozenset({b"uuid", b"jumb"})
 # byte-order ambiguity and stays surgical: only AI-bearing XMP is dropped, plain
 # XMP (copyright, camera info) is kept.
 _AI_LABEL_MARKERS: tuple[bytes, ...] = AIGC_MARKERS + IPTC_AI_MARKERS + IPTC_AI_FIELD_MARKERS
+
+# Adobe XMP packet delimiters (XMP spec part 3). In HEIF/AVIF the XMP packet
+# sits inside a ``meta``-box ``mime`` item whose bytes live in ``mdat`` / ``idat``,
+# out of reach of the top-level box stripper, so an AI-label packet there is
+# blanked in place (see ``blank_ai_xmp_packets``).
+_XMP_PACKET_RE = re.compile(rb"<\?xpacket begin=.*?<\?xpacket end=[^>]*?\?>", re.DOTALL)
 
 
 def _iter_top_level_boxes(data: bytes) -> Iterator[tuple[int, int, bytes, int]]:
@@ -145,9 +152,10 @@ def strip_c2pa_boxes(data: bytes) -> tuple[bytes, int]:
     All other boxes (incl. ``mdat`` / codestream) are emitted verbatim, so pixel
     and audio data is preserved bit-for-bit. Non-ISOBMFF input is returned
     unchanged. Despite the name this also covers MP4/MOV/M4A video and audio
-    (all ISOBMFF). NOTE: EXIF/XMP stored as *items inside the ``meta`` box*
-    (typical for AVIF/HEIF images) is not removed -- that needs meta-box surgery
-    and is a documented limitation.
+    (all ISOBMFF). NOTE: this drops only top-level boxes. An AI-label XMP packet
+    stored as an *item inside the ``meta`` box* (typical for AVIF/HEIF) is handled
+    separately by :func:`blank_ai_xmp_packets`; an ``Exif`` meta-box item is still
+    not removed (would need meta-box surgery) and remains a documented limitation.
     """
     if not is_isobmff(data):
         return data, 0
@@ -167,3 +175,30 @@ def strip_c2pa_boxes(data: bytes) -> tuple[bytes, int]:
             continue
         out.extend(data[start:end])
     return bytes(out), stripped
+
+
+def blank_ai_xmp_packets(data: bytes) -> tuple[bytes, int]:
+    """Overwrite (with spaces, in place) any XMP packet carrying an AI-label
+    marker; return ``(data, blanked_count)``.
+
+    HEIF/AVIF store XMP as a ``meta``-box ``mime`` item whose bytes live in
+    ``mdat`` / ``idat``, which ``strip_c2pa_boxes`` cannot remove without
+    meta-box surgery (``iinf`` / ``iloc`` rewrite). Instead, the XMP packet is
+    located by its ``<?xpacket begin ... end?>`` delimiters and, when it carries
+    an AI-label marker (TC260 AIGC / IPTC / IPTC-2025.1), overwritten with spaces.
+    Because the replacement is the **same length**, every box size and ``iloc``
+    offset stays valid and the coded image data is untouched -- only the AI label
+    content is destroyed. Packets without an AI marker (plain copyright / camera
+    XMP) are left intact, mirroring the top-level XMP-``uuid`` content match.
+    """
+    blanked = 0
+
+    def _scrub(match: re.Match[bytes]) -> bytes:
+        nonlocal blanked
+        packet = match.group()
+        if any(marker in packet for marker in _AI_LABEL_MARKERS):
+            blanked += 1
+            return b" " * len(packet)
+        return packet
+
+    return _XMP_PACKET_RE.sub(_scrub, data), blanked

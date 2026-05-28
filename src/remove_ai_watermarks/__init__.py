@@ -1,3 +1,3 @@
 """Remove-AI-Watermarks: Unified tool for removing visible and invisible AI watermarks."""
 
-__version__ = "0.6.8"
+__version__ = "0.6.9"

@@ -712,6 +712,68 @@ class TestLateProvenanceBox:
         assert has_ai_metadata(p) is True
 
 
+_AI_XMP = (
+    b'<?xpacket begin="\xef\xbb\xbf" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+    b'<x:xmpmeta><TC260:AIGC>{"Label":"1"}</TC260:AIGC></x:xmpmeta>'
+    b'<?xpacket end="w"?>'
+)
+_PLAIN_XMP = (
+    b'<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+    b"<x:xmpmeta><dc:rights>(c) me</dc:rights></x:xmpmeta>"
+    b'<?xpacket end="w"?>'
+)
+
+
+class TestMetaBoxXmpBlanking:
+    """HEIF/AVIF store XMP as a meta-box ``mime`` item (bytes in mdat/idat), out of
+    reach of the top-level box stripper. An AI-label XMP packet there is blanked
+    in place (same length -> iloc offsets and image data stay intact)."""
+
+    def test_blanks_ai_packet_only(self):
+        from remove_ai_watermarks.noai.isobmff import blank_ai_xmp_packets
+
+        before, after = b"IMG_BEFORE" * 4, b"IMG_AFTER" * 4
+        data = before + _AI_XMP + after + _PLAIN_XMP
+        out, n = blank_ai_xmp_packets(data)
+        assert n == 1
+        assert len(out) == len(data)  # same length -> no offset shifts
+        assert b"TC260:AIGC" not in out  # AI label destroyed
+        assert before in out  # surrounding (image) bytes intact
+        assert after in out
+        assert b"dc:rights" in out  # plain XMP left alone
+
+    def test_no_packet_is_noop(self):
+        from remove_ai_watermarks.noai.isobmff import blank_ai_xmp_packets
+
+        data = b"just some mdat bytes, no xmp here"
+        assert blank_ai_xmp_packets(data) == (data, 0)
+
+    def test_plain_xmp_untouched(self):
+        from remove_ai_watermarks.noai.isobmff import blank_ai_xmp_packets
+
+        out, n = blank_ai_xmp_packets(_PLAIN_XMP)
+        assert n == 0
+        assert out == _PLAIN_XMP
+
+    def test_remove_ai_metadata_blanks_meta_box_xmp(self, tmp_path: Path):
+        # End-to-end: a HEIF with an AI XMP packet inside mdat is cleaned without
+        # touching the surrounding (coded image) bytes or the file length.
+        heic_ftyp = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00heicmif1"
+        img = b"CODEDIMAGE" * 8
+        mdat = _box(b"mdat", img + _AI_XMP + img)
+        src = tmp_path / "ai.heic"
+        src.write_bytes(heic_ftyp + mdat)
+        assert has_ai_metadata(src) is True
+
+        out = tmp_path / "clean.heic"
+        remove_ai_metadata(src, out)
+        res = out.read_bytes()
+        assert len(res) == src.stat().st_size  # length preserved
+        assert b"TC260:AIGC" not in res
+        assert img in res  # coded image bytes intact
+        assert has_ai_metadata(out) is False
+
+
 class TestIsobmffMetadataRemoval:
     """Container-level AI-provenance stripping across ISOBMFF image/video/audio."""
 

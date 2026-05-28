@@ -575,16 +575,25 @@ def remove_ai_metadata(
     # codestream bit-for-bit. MP4/MOV/M4A are ISOBMFF too, so the same top-level
     # uuid/jumb box walker applies. Route by suffix OR by an ``ftyp`` content
     # sniff, so a correctly-shaped container is handled whatever its extension.
-    from remove_ai_watermarks.noai.isobmff import is_isobmff, strip_c2pa_boxes
+    from remove_ai_watermarks.noai.isobmff import blank_ai_xmp_packets, is_isobmff, strip_c2pa_boxes
 
     with open(source_path, "rb") as f:
         head = f.read(12)
     if source_path.suffix.lower() in _ISOBMFF_EXTS or is_isobmff(head):
         data = source_path.read_bytes()
+        # Top-level uuid/jumb boxes (C2PA + AI-label XMP), then AI-label XMP that
+        # lives inside a meta-box ``mime`` item (HEIF/AVIF) -- blanked in place so
+        # box sizes and iloc offsets stay valid and the coded image is untouched.
         cleaned, stripped = strip_c2pa_boxes(data)
+        cleaned, blanked = blank_ai_xmp_packets(cleaned)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(cleaned)
-        logger.info("Stripped %d AI-provenance box(es) → %s", stripped, output_path)
+        logger.info(
+            "Stripped %d AI-provenance box(es), blanked %d meta-box XMP packet(s) → %s",
+            stripped,
+            blanked,
+            output_path,
+        )
         return output_path
 
     # Non-ISOBMFF audio/video (WebM/Matroska EBML, MP3 ID3, WAV/FLAC/OGG): the
