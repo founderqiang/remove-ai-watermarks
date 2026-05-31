@@ -383,6 +383,13 @@ class DoubaoEngine:
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         elif image.shape[2] == 4:
             image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+        # An image too small to hold the mark would make the geometry boxes
+        # degenerate and feed cv2.resize a ~1-px-tall target / GaussianBlur a sliver
+        # ROI, which faults natively on Windows (access violation / "Unknown C++
+        # exception"). No real watermarked image is this small; skip cv2 entirely.
+        h, w = image.shape[:2]
+        if h < 32 or w < 64:
+            return image.copy()
         maps = [c for c in (self._fixed_alpha_map(image), self._aligned_alpha_map(image)) if c is not None]
         if not maps:
             return image.copy()

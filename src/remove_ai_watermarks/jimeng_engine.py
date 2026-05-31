@@ -371,6 +371,13 @@ class JimengEngine:
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         elif image.shape[2] == 4:
             image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+        # An image too small to hold the mark would make the geometry boxes
+        # degenerate and feed cv2.resize a ~1-px-tall target / GaussianBlur a sliver
+        # ROI, which faults natively on Windows (access violation / "Unknown C++
+        # exception"). No real watermarked image is this small; skip cv2 entirely.
+        h, w = image.shape[:2]
+        if h < 32 or w < 64:
+            return image.copy()
         # Always try fixed geometry AND the NCC-aligned placement and keep
         # whichever leaves the least residual mark (re-detect confidence on the
         # bare reverse-alpha). Unlike Doubao's deterministic overlay, Jimeng jitters
