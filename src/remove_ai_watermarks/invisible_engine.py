@@ -126,7 +126,7 @@ class InvisibleEngine:
         humanize: float = 0.0,
         max_resolution: int = 0,
         vendor: str | None = None,
-        restore_faces: bool = True,
+        restore_faces: bool = False,
         restore_faces_weight: float = 0.5,
     ) -> Path:
         """Remove invisible watermark from an image.
@@ -140,9 +140,10 @@ class InvisibleEngine:
             guidance_scale: Classifier-free guidance scale.
             seed: Random seed for reproducibility.
             humanize: Intensity of Analog Humanizer film grain (0 = off).
-            restore_faces: Run the optional GFPGAN face-restoration post-pass when
-                faces are present (needs the ``restore`` extra). Auto-skips with a
-                debug log when the extra is absent or no face is detected.
+            restore_faces: EXPERIMENTAL, opt-in (default False). Run the GFPGAN
+                face-restoration post-pass when faces are present (needs the
+                ``restore`` extra). Auto-skips with a debug log when the extra is
+                absent or no face is detected.
             restore_faces_weight: GFPGAN fidelity weight (0-1); lower = more GAN
                 regeneration (cleaner watermark scrub), higher = closer to input.
             max_resolution: Cap the long side (px) before diffusion. 0 (default)

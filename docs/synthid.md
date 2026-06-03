@@ -379,14 +379,18 @@ the payload, reconstituting SynthID in text. The lesson held and shaped the
 current design: **content is preserved by REGENERATING it under structural
 conditioning, never by copying original pixels.**
 
-- **Text + structure:** `--pipeline controlnet` (SDXL img2img + a canny ControlNet)
-  conditions the regeneration on the edge map, so text and structure stay sharp
+Both preservation features below are **EXPERIMENTAL and opt-in (off by default)**;
+the plain `default` SDXL img2img pass is the shippable path.
+
+- **Text + structure:** `--pipeline controlnet` (SDXL img2img + a canny ControlNet,
+  experimental/opt-in) conditions the regeneration on the edge map, so text and
+  structure stay sharp
   while every pixel is still regenerated -- SynthID is removed everywhere. Verified
   better than plain img2img at the same strength (text stays legible where plain
   garbles it), and the controlnet background scrub reads clean on the oracle.
 - **Face identity:** canny holds face *structure* but not *identity*. Shipped as the
   optional `--restore-faces` GFPGAN post-pass (`face_restore.py`, the `restore`
-  extra, ON by default, auto when faces present). It runs GFPGAN on the ORIGINAL
+  extra, experimental/opt-in, off by default). It runs GFPGAN on the ORIGINAL
   faces and feather-composites the restored face REGIONS into the cleaned image:
   GFPGAN RE-SYNTHESIZES each face from a StyleGAN2 prior (GAN pixels, not original
   -> scrubs SynthID) at a low fidelity weight (`--restore-faces-weight`, default

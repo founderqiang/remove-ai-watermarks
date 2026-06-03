@@ -143,7 +143,8 @@ _controlnet_scale_option = click.option(
     "--controlnet-scale",
     type=float,
     default=1.0,
-    help="ControlNet conditioning scale (structure/text preservation strength), controlnet pipeline only.",
+    help="ControlNet conditioning scale (structure/text preservation strength), controlnet pipeline "
+    "only (EXPERIMENTAL).",
 )
 
 
@@ -151,10 +152,10 @@ def _restore_faces_options(f: Any) -> Any:
     """Attach the shared GFPGAN face-restoration flags to an invisible-pipeline command."""
     restore_flag = click.option(
         "--restore-faces/--no-restore-faces",
-        default=True,
-        help="Restore face identity with a GFPGAN post-pass when faces are present "
-        "(needs the 'restore' extra); on by default, auto-skips when no face is detected "
-        "or the extra is absent.",
+        default=False,
+        help="EXPERIMENTAL, opt-in. Restore face identity with a GFPGAN post-pass when "
+        "faces are present (needs the 'restore' extra); off by default, auto-skips when no "
+        "face is detected or the extra is absent.",
     )
     weight_flag = click.option(
         "--restore-faces-weight",
@@ -471,7 +472,7 @@ def cmd_erase(
     type=click.Choice(["default", "controlnet"]),
     default="default",
     help="Pipeline profile (default=SDXL img2img; controlnet=SDXL + canny ControlNet that preserves "
-    "text/faces via edge conditioning while removing SynthID).",
+    "text/faces via edge conditioning while removing SynthID, EXPERIMENTAL).",
 )
 @click.option(
     "--device",
@@ -715,7 +716,7 @@ def cmd_identify(ctx: click.Context, source: Path, no_visible: bool, as_json: bo
     type=click.Choice(["default", "controlnet"]),
     default="default",
     help="Pipeline profile (default=SDXL img2img; controlnet=SDXL + canny ControlNet that preserves "
-    "text/faces via edge conditioning while removing SynthID).",
+    "text/faces via edge conditioning while removing SynthID, EXPERIMENTAL).",
 )
 @click.option("--model", type=str, default=None, help="HuggingFace model ID for invisible removal.")
 @click.option(
@@ -907,7 +908,7 @@ def _process_batch_image(
     hf_token: str | None,
     humanize: float,
     max_resolution: int = 0,
-    restore_faces: bool = True,
+    restore_faces: bool = False,
     restore_faces_weight: float = 0.5,
 ) -> None:
     """Process a single image for batch mode.
@@ -1012,7 +1013,7 @@ def _process_batch_image(
     type=click.Choice(["default", "controlnet"]),
     default="default",
     help="Pipeline profile (default=SDXL img2img; controlnet=SDXL + canny ControlNet that preserves "
-    "text/faces via edge conditioning while removing SynthID).",
+    "text/faces via edge conditioning while removing SynthID, EXPERIMENTAL).",
 )
 @click.option(
     "--device",
