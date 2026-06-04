@@ -346,6 +346,61 @@ class TestUnderSubtractionGain:
         assert abs(float(footprint.mean()) - 80.0) < 20.0
 
 
+class TestVerifyAndRepair:
+    """Self-verify fallback: a sparkle that survives reverse-alpha is inpaint-repaired,
+    but only when that lowers the re-detect confidence (so it can never regress).
+
+    The detector NCC is degenerate on flat synthetic backgrounds, so the keep-best
+    control flow is driven through a stubbed ``detect_watermark`` rather than a real
+    re-detect (mirroring the reasoning in TestUnderSubtractionGain).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_engine(self):
+        self.engine = GeminiEngine()
+        self.alpha = self.engine.get_interpolated_alpha(96)
+        self.pos = (200, 200)
+
+    def _stub_detect(self, confidences):
+        """detect_watermark stub yielding the given confidences in order."""
+        seq = iter(confidences)
+
+        def fake(image, force_size=None):
+            return DetectionResult(detected=True, confidence=next(seq))
+
+        return fake
+
+    def _repair(self, result):
+        return self.engine._verify_and_repair(result, self.alpha, self.pos, WatermarkSize.LARGE)
+
+    def test_clean_removal_returned_untouched(self, monkeypatch):
+        """Below the fallback threshold, the input is returned byte-identical."""
+        img = np.full((600, 600, 3), 90, dtype=np.uint8)
+        monkeypatch.setattr(self.engine, "detect_watermark", self._stub_detect([0.2]))
+        out = self._repair(img)
+        assert out is img  # no copy, no inpaint
+
+    def test_keeps_footprint_inpaint_when_it_helps(self, monkeypatch):
+        """A surviving sparkle is footprint-inpainted when that re-detects lower; the
+        footprint pixels change."""
+        img = np.full((600, 600, 3), 90, dtype=np.uint8)
+        # Bright residual block over the footprint so the inpaint visibly changes it.
+        img[self.pos[1] : self.pos[1] + 96, self.pos[0] : self.pos[0] + 96] = 240
+        # residual 0.7 (>= 0.5 triggers), candidate re-detects 0.2 (< residual -> keep).
+        monkeypatch.setattr(self.engine, "detect_watermark", self._stub_detect([0.7, 0.2]))
+        out = self._repair(img)
+        assert out is not img
+        assert not np.array_equal(out, img)  # footprint was inpainted from surroundings
+
+    def test_repair_rejected_when_inpaint_does_not_help(self, monkeypatch):
+        """When the inpaint does not lower the re-detect confidence, keep the original."""
+        img = np.full((600, 600, 3), 90, dtype=np.uint8)
+        # residual 0.7, candidate re-detects 0.75 (>= residual -> reject the inpaint).
+        monkeypatch.setattr(self.engine, "detect_watermark", self._stub_detect([0.7, 0.75]))
+        out = self._repair(img)
+        assert out is img
+
+
 class TestSparkleFalsePositiveGate:
     """False-positive gate: a low-confidence shape match whose core is NOT brighter
     than its surroundings (ornate/flat content, not a white sparkle overlay) is

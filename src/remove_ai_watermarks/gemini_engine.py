@@ -171,6 +171,23 @@ class GeminiEngine:
     _SPARKLE_FP_CONF = 0.65
     _SPARKLE_FP_MARGIN = 5.0
 
+    # Self-verify fallback. The gain estimate corrects most under-subtractions, but
+    # on the spaces corpus a tail of strong sparkles still survived reverse-alpha
+    # (a few px of position jitter or a gain estimate the [1.0, 1.94] clamp could
+    # not fully reach). After the reverse blend, re-detect; if a sparkle this strong
+    # remains, inpaint the footprint and keep that ONLY when it lowers the re-detect
+    # confidence. Purely additive: the common clean removal re-detects below this and
+    # is returned untouched. Threshold matches the registry's real fail line (0.5),
+    # so it triggers exactly on the cases that would otherwise read as not-removed
+    # (rescued 4 of 15 corpus fails, 0 regressions). An offset+scale alignment search
+    # was prototyped on the remaining 11 but REJECTED: it only lowered the shape-NCC by
+    # moving the reverse-alpha to a different placement that left the sparkle as bright
+    # or brighter (NCC-gaming, not removal), so a brightness sanity check rejected every
+    # one. The footprint inpaint physically reconstructs the slot from its surroundings,
+    # so its rescues are genuine; the survivors are near-white ill-conditioning or
+    # detector false positives that no reverse-alpha placement fixes.
+    _VERIFY_FALLBACK_CONF = 0.5
+
     # Corner promotion (issue #36): the size weight that suppresses tiny-patch
     # false positives also buries a small, near-perfect sparkle when a larger,
     # mediocre match sits elsewhere (e.g. a bright collar in a portrait). A small
@@ -521,7 +538,7 @@ class GeminiEngine:
             self._inpaint_footprint(result, alpha_map, pos)
         else:
             self._reverse_alpha_blend(result, alpha_map, pos)
-        return result
+        return self._verify_and_repair(result, alpha_map, pos, size)
 
     def remove_watermark_custom(
         self,
@@ -707,6 +724,33 @@ class GeminiEngine:
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         mask = cv2.dilate(mask, kernel, iterations=2)
         image[cy1:cy2, cx1:cx2] = cv2.inpaint(crop, mask, 6, cv2.INPAINT_NS)
+
+    def _verify_and_repair(
+        self,
+        result: NDArray[Any],
+        alpha_map: NDArray[Any],
+        position: tuple[int, int],
+        size: WatermarkSize,
+    ) -> NDArray[Any]:
+        """Inpaint-repair a sparkle that survived reverse-alpha, keeping the better.
+
+        Re-detect on the reverse-alpha output; if a sparkle this strong remains (an
+        alpha mismatch the gain estimate could not fully correct), inpaint the
+        footprint and return that ONLY when it lowers the re-detect confidence. The
+        footprint inpaint reconstructs from the (darker) surroundings, so it physically
+        removes the bright sparkle rather than gaming the shape-NCC. Returns ``result``
+        unchanged when the removal is already clean (the common case) or when the
+        inpaint does not improve it, so it can never regress.
+        """
+        residual = self.detect_watermark(result, force_size=size).confidence
+        if residual < self._VERIFY_FALLBACK_CONF:
+            return result
+        candidate = result.copy()
+        self._inpaint_footprint(candidate, alpha_map, position)
+        if self.detect_watermark(candidate, force_size=size).confidence < residual:
+            logger.debug("Sparkle survived reverse-alpha (conf=%.3f); footprint inpaint improved it.", residual)
+            return candidate
+        return result
 
     def _reverse_alpha_blend(
         self,
