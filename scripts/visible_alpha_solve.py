@@ -68,6 +68,7 @@ class EngineSpec:
     gray: str
     asset: Path
     native_width: int = 2048
+    corner: str = "br"  # which corner the mark sits in: "br" (Doubao/Jimeng) or "bl" (Samsung)
 
 
 _SPECS: dict[str, EngineSpec] = {
@@ -84,6 +85,18 @@ _SPECS: dict[str, EngineSpec] = {
         "jimeng_cap_A.png",  # black seed
         "jimeng_cap_C.png",  # gray seed
         _ROOT / "src" / "remove_ai_watermarks" / "assets" / "jimeng_alpha.png",
+    ),
+    "samsung": EngineSpec(
+        "samsung",
+        _ROOT / "data" / "samsung_capture" / "captures",
+        "samsung_black_1.png",  # black flat edit (mark on true black, bottom-left)
+        "samsung_gray_1.png",  # gray flat edit
+        _ROOT / "src" / "remove_ai_watermarks" / "assets" / "samsung_alpha.png",
+        # The flat captures arrive at the phone's flat-edit size (1086 wide); the
+        # mark is a fixed FRACTION of width (~0.31), consistent with the 2958-wide
+        # real photos, so geometry is emitted relative to the capture width.
+        native_width=1086,
+        corner="bl",
     ),
 }
 
@@ -119,19 +132,26 @@ def _union_bbox(mask: NDArray[np.uint8], err: str) -> tuple[int, int, int, int]:
     return x0, x1, y0, y1
 
 
-def _locate_on_black(black: NDArray[np.float32]) -> tuple[int, int, int, int]:
-    """Bounding box of the white mark on the black capture (bottom-right).
+def _locate_on_black(black: NDArray[np.float32], corner: str = "br") -> tuple[int, int, int, int]:
+    """Bounding box of the white mark on the black capture, in the given corner.
 
     Thresholds well above the blotchy near-black background, then unions the
-    sufficiently-large bright components so the box spans the whole word.
+    sufficiently-large bright components so the box spans the whole word. ``corner``
+    is ``"br"`` (bottom-right, Doubao/Jimeng) or ``"bl"`` (bottom-left, Samsung).
+    The horizontal window is kept generous (the Samsung text strip is ~0.31 of the
+    width, so a corner *quarter* would clip it) while still excluding any centered
+    generated content the flat edit hallucinated.
     """
     h, w = black.shape[:2]
     lum = black.mean(axis=2)
     br = lum > 40  # comfortably above the ~5-30 background blotches
     br[: h * 3 // 4, :] = False  # bottom quarter only
-    br[:, : w * 3 // 4] = False  # right quarter only
+    if corner == "bl":
+        br[:, w // 2 :] = False  # left half only
+    else:
+        br[:, : w * 3 // 4] = False  # right quarter only
     bright = cv2.morphologyEx(br.astype(np.uint8) * 255, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
-    return _union_bbox(bright, "no mark found on the black capture (bottom-right is empty)")
+    return _union_bbox(bright, f"no mark found on the black capture ({corner} corner is empty)")
 
 
 def _cubic_background(crop: NDArray[np.float32], glyph: NDArray[np.bool_]) -> NDArray[np.float32]:
@@ -161,7 +181,7 @@ def solve_alpha(spec: EngineSpec) -> NDArray[np.uint8]:
     gray_f = gray.astype(np.float32)
 
     img_h, img_w = black_f.shape[:2]
-    mx0, mx1, my0, my1 = _locate_on_black(black_f)
+    mx0, mx1, my0, my1 = _locate_on_black(black_f, spec.corner)
     pad = _CUBIC_BG_PAD
     rx0, rx1 = max(0, mx0 - pad), min(img_w, mx1 + pad)
     ry0, ry1 = max(0, my0 - pad), min(img_h, my1 + pad)
@@ -186,16 +206,20 @@ def solve_alpha(spec: EngineSpec) -> NDArray[np.uint8]:
     aw, ah = tight.shape[1], tight.shape[0]
     # Absolute asset position in the capture, for the engine's geometry constants.
     abs_x0, abs_y0 = rx0 + cx0, ry0 + cy0
+    # Horizontal margin depends on the anchor corner: left margin for "bl", right
+    # margin (distance from the right edge) for "br".
+    h_margin = abs_x0 if spec.corner == "bl" else img_w - (abs_x0 + aw)
     log.info(
         "%s: alpha %dx%d max %.3f | WIDTH_FRAC %.4f HEIGHT_FRAC %.4f "
-        "MARGIN_RIGHT_FRAC %.4f MARGIN_BOTTOM_FRAC %.4f (native_width %d)",
+        "MARGIN_%s_FRAC %.4f MARGIN_BOTTOM_FRAC %.4f (native_width %d)",
         spec.name,
         aw,
         ah,
         float(tight.max()),
         aw / spec.native_width,
         ah / spec.native_width,
-        (img_w - (abs_x0 + aw)) / spec.native_width,
+        "LEFT" if spec.corner == "bl" else "RIGHT",
+        h_margin / spec.native_width,
         (img_h - (abs_y0 + ah)) / spec.native_width,
         spec.native_width,
     )
@@ -234,7 +258,7 @@ def main(engine: str) -> None:
             raise OSError(f"failed to write {path}")
         log.info("%s: wrote %s", label, path.relative_to(_ROOT))
 
-    if engine in ("doubao", "jimeng", "all"):
+    if engine in (*_SPECS, "all"):
         specs = list(_SPECS.values()) if engine == "all" else [_SPECS[engine]]
         for spec in specs:
             _write(spec.asset, solve_alpha(spec), spec.name)

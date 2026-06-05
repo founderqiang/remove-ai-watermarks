@@ -46,6 +46,8 @@ data/jimeng_capture/seeds/
 data/jimeng_capture/captures/jimeng_content_*.png
 data/gemini_capture/seeds/
 data/gemini_capture/captures/gemini_content_*.png
+data/samsung_capture/seeds/
+data/samsung_capture/captures/samsung_content_*
 
 # GFPGAN downloads its RetinaFace/parsing weights to a CWD ./gfpgan/weights/
 # working dir on first use (the restore extra). Runtime artifact, never committed.

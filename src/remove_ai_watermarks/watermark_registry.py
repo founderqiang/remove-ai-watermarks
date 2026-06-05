@@ -23,6 +23,7 @@ Entries:
   - ``gemini`` -- Google Gemini / Nano Banana sparkle, bottom-right.
   - ``doubao`` -- ByteDance Doubao "豆包AI生成" text strip, bottom-right.
   - ``jimeng`` -- ByteDance Jimeng / Dreamina "★ 即梦AI" wordmark, bottom-right.
+  - ``samsung`` -- Samsung Galaxy AI "Contenuti generati dall'AI" strip, bottom-left.
 """
 
 from __future__ import annotations
@@ -116,6 +117,10 @@ def _engine(key: str) -> Any:
             from remove_ai_watermarks.jimeng_engine import JimengEngine
 
             _engines[key] = JimengEngine()
+        elif key == "samsung":
+            from remove_ai_watermarks.samsung_engine import SamsungEngine
+
+            _engines[key] = SamsungEngine()
         else:  # pragma: no cover - guarded by the registry keys
             raise KeyError(key)
     return _engines[key]
@@ -190,6 +195,24 @@ def _jimeng_remove(
     return image.copy(), None
 
 
+def _samsung_detect(image: NDArray[Any]) -> MarkDetection:
+    d = _engine("samsung").detect(image)
+    return MarkDetection("samsung", "Samsung Galaxy AI text", "bottom-left", d.detected, d.confidence, d.region)
+
+
+def _samsung_remove(
+    image: NDArray[Any], _inpaint_method: InpaintMethod, _inpaint: bool, _strength: float, force: bool
+) -> tuple[NDArray[Any], Region | None]:
+    # Reverse-alpha (with an always-on thin residual inpaint over the glyph
+    # footprint, see the engine): apply when the mark is present and the alpha asset
+    # loads. Skipped otherwise (no hallucination on a clean corner).
+    engine = _engine("samsung")
+    det = engine.detect(image)
+    if (det.detected or force) and engine.reverse_alpha_available(image):
+        return engine.remove_watermark_reverse_alpha(image), (det.region if det.detected else None)
+    return image.copy(), None
+
+
 _REGISTRY: tuple[KnownMark, ...] = (
     KnownMark("gemini", "Google Gemini sparkle", "bottom-right", True, "reverse-alpha", _gemini_detect, _gemini_remove),
     KnownMark(
@@ -197,6 +220,9 @@ _REGISTRY: tuple[KnownMark, ...] = (
     ),
     KnownMark(
         "jimeng", "Jimeng 即梦AI wordmark", "bottom-right", True, "reverse-alpha", _jimeng_detect, _jimeng_remove
+    ),
+    KnownMark(
+        "samsung", "Samsung Galaxy AI text", "bottom-left", True, "reverse-alpha", _samsung_detect, _samsung_remove
     ),
 )
 
