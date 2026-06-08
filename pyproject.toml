@@ -92,9 +92,22 @@ photomaker = [
     "photomaker @ git+https://github.com/TencentARC/PhotoMaker.git",
     "huggingface-hub>=0.20.0",
     # Upstream PhotoMaker imports `einops` but doesn't declare it in its install_requires
-    # (verified 2026-06-04: cert sweep failed with "No module named 'einops'"). Pin it
-    # here so the extra is self-contained.
+    # (verified 2026-06-04: cert sweep failed with "No module named 'einops'").
     "einops>=0.7.0",
+    # `insightface` is the upstream PyPI package's CODE (MIT). PhotoMaker's package
+    # __init__.py unconditionally `from .insightface_package import FaceAnalysis2`,
+    # so just IMPORTING the V1 pipeline class requires `insightface` to be importable
+    # -- we never actually call `FaceAnalysis()` (which is what would trigger the
+    # non-commercial model-pack download), so the legal status of the *models* does
+    # not bind us. The code itself is MIT. See `photomaker_restore.py` for the V1-only
+    # call path. Without this dep the cert sweep fails with
+    # "No module named 'insightface'" (caught empirically 2026-06-04).
+    "insightface>=0.7.3",
+    # `insightface` pulls onnxruntime as a runtime dep for the FaceAnalysis class. We
+    # never instantiate that class, but the import has to resolve, so we pin it
+    # explicitly (already pinned by the `lama` extra; pinned here too so this extra is
+    # self-contained without depending on `lama`).
+    "onnxruntime>=1.16.0",
 ]
 # Optional pre-diffusion super-resolution for small inputs (Real-ESRGAN). Loaded via
 # spandrel (MIT) -- a pure model-loader with NO basicsr dependency (it pulls only

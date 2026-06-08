@@ -46,6 +46,22 @@ Commercial-safe end-to-end:
 Requires the optional ``photomaker`` extra: ``pip install
 'remove-ai-watermarks[photomaker]'`` (pulls torch / diffusers / the upstream PhotoMaker
 package, all commercial-safe). Weights download on first use; never bundled.
+
+**Why the extra includes ``insightface`` even though we use V1.** The upstream
+PhotoMaker package's ``__init__.py`` unconditionally imports its face-analyser
+wrapper (an InsightFace subclass), so JUST importing the V1 pipeline class needs
+``insightface`` to be importable -- otherwise the import errors with
+``ModuleNotFoundError: No module named 'insightface'`` (caught empirically by the
+Modal cert sweep 2026-06-04). The PyPI ``insightface`` package itself is MIT-licensed
+CODE; the non-commercial restriction is on the pretrained MODEL packs (antelopev2,
+buffalo_l), which only download when the face-analyser class is INSTANTIATED. **We
+never instantiate it** -- our V1 path uses
+``PhotoMakerStableDiffusionXLPipeline.load_photomaker_adapter`` which loads
+photomaker-v1.bin (the OpenCLIP-only encoder) and never touches the InsightFace face
+analyser. So the legal status of the InsightFace model packs does not bind us; this
+module only depends on the MIT-licensed CODE for the import to resolve. A test
+(``tests/test_photomaker_restore.py::TestV1OnlyCommercialSafetyGuard``) asserts that
+this module never references the face-analyser class.
 """
 
 # cv2/torch/diffusers boundary: relax unknown-type rules for this file only.
@@ -123,6 +139,16 @@ def _get_pipeline() -> Any:
             dtype = torch.float16 if device == "cuda" else torch.float32
             logger.info("photomaker_restore: loading SDXL+PhotoMaker on %s (%s)", device, dtype)
 
+            # Belt-and-suspenders: V1 file name. If a future maintainer points
+            # _PHOTOMAKER_FILE at v2, this stops the build so we don't silently regress
+            # to the non-commercial InsightFace path.
+            if _PHOTOMAKER_FILE != "photomaker-v1.bin":
+                raise RuntimeError(
+                    f"PhotoMaker V1 is the only commercial-safe variant; got "
+                    f"{_PHOTOMAKER_FILE!r}. V2 requires the non-commercial InsightFace "
+                    "antelopev2/buffalo_l face packs "
+                    "(see docs/synthid-robust-identity-research.md)."
+                )
             adapter_path = hf_hub_download(repo_id=_PHOTOMAKER_REPO, filename=_PHOTOMAKER_FILE)
             pipe = PhotoMakerStableDiffusionXLPipeline.from_pretrained(_SDXL_MODEL_ID, torch_dtype=dtype)
             pipe.load_photomaker_adapter(

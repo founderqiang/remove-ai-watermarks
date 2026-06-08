@@ -25,6 +25,28 @@ class TestIsAvailable:
         assert isinstance(photomaker_restore.is_available(), bool)
 
 
+class TestV1OnlyCommercialSafetyGuard:
+    """The module must lock to PhotoMaker-V1 (Apache + CLIP-only encoder).
+
+    V2 pulls InsightFace antelopev2/buffalo_l face packs which are non-commercial.
+    A maintainer touching ``_PHOTOMAKER_FILE`` for any reason must trip this guard.
+    """
+
+    def test_repo_is_v1(self):
+        assert photomaker_restore._PHOTOMAKER_REPO == "TencentARC/PhotoMaker"
+
+    def test_weight_filename_is_v1(self):
+        assert photomaker_restore._PHOTOMAKER_FILE == "photomaker-v1.bin"
+
+    def test_module_source_does_not_call_face_analysis(self):
+        """We may IMPORT `insightface` (transitive) but must never instantiate FaceAnalysis."""
+        import inspect
+
+        src = inspect.getsource(photomaker_restore)
+        assert "FaceAnalysis" not in src
+        assert "insightface.app" not in src
+
+
 class TestFaceCropSquare:
     def test_centers_on_face_box(self):
         img = np.full((400, 400, 3), 128, dtype=np.uint8)
