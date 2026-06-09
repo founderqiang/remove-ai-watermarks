@@ -276,6 +276,13 @@ def _get_pipeline() -> Any:
                 controlnet=controlnet,
                 torch_dtype=dtype,
                 custom_pipeline=str(_fetch_img2img_pipeline_file()),
+                # Custom_pipeline from a local .py file triggers diffusers' remote-code
+                # guard; the file is fetched from a pinned raw.githubusercontent URL
+                # we control, so opt in here. Without this the load silently falls
+                # back to a default pipeline (no img2img + no IP-Adapter cross-attn),
+                # the next call hits an AttributeError on load_ip_adapter_instantid,
+                # and our outer except logs but skips the whole restore.
+                trust_remote_code=True,
             )
             pipe.to(device)
             # IP-Adapter weights that wire the ArcFace embedding into cross-attention.
