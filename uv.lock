@@ -2431,6 +2431,12 @@ gpu = [
     { name = "torch" },
     { name = "transformers" },
 ]
+instantid = [
+    { name = "huggingface-hub" },
+    { name = "insightface" },
+    { name = "onnxruntime", version = "1.24.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "onnxruntime", version = "1.26.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
 lama = [
     { name = "huggingface-hub" },
     { name = "onnxruntime", version = "1.24.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -2455,12 +2461,15 @@ requires-dist = [
     { name = "click", specifier = ">=8.0.0" },
     { name = "diffusers", marker = "extra == 'gpu'", specifier = ">=0.38.0" },
     { name = "einops", marker = "extra == 'photomaker'", specifier = ">=0.7.0" },
+    { name = "huggingface-hub", marker = "extra == 'instantid'", specifier = ">=0.20.0" },
     { name = "huggingface-hub", marker = "extra == 'lama'", specifier = ">=0.20.0" },
     { name = "huggingface-hub", marker = "extra == 'photomaker'", specifier = ">=0.20.0" },
+    { name = "insightface", marker = "extra == 'instantid'", specifier = ">=0.7.3" },
     { name = "insightface", marker = "extra == 'photomaker'", specifier = ">=0.7.3" },
     { name = "invisible-watermark", marker = "extra == 'detect'", specifier = ">=0.2.0" },
     { name = "invisible-watermark", marker = "extra == 'dev'", specifier = ">=0.2.0" },
     { name = "numpy", specifier = ">=1.24.0" },
+    { name = "onnxruntime", marker = "extra == 'instantid'", specifier = ">=1.16.0" },
     { name = "onnxruntime", marker = "extra == 'lama'", specifier = ">=1.16.0" },
     { name = "onnxruntime", marker = "extra == 'photomaker'", specifier = ">=1.16.0" },
     { name = "opencv-python-headless", specifier = ">=4.8.0" },
@@ -2481,7 +2490,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'gpu'", specifier = ">=5,<6" },
     { name = "trustmark", marker = "extra == 'trustmark'", specifier = ">=0.8.0" },
 ]
-provides-extras = ["gpu", "detect", "trustmark", "lama", "photomaker", "esrgan", "dev", "all"]
+provides-extras = ["gpu", "detect", "trustmark", "lama", "photomaker", "instantid", "esrgan", "dev", "all"]
 
 [[package]]
 name = "requests"

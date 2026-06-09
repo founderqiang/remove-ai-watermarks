@@ -83,8 +83,7 @@ _SDXL_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
 # 2026-06-04: at 512 V2 produced a collage of training-time faces; at 1024 with the
 # upstream-style descriptive prompt it produces a clean face.
 _PHOTOMAKER_PROMPT = (
-    "instagram photo, portrait photo of a person img, natural skin, soft lighting, "
-    "best quality, sharp focus"
+    "instagram photo, portrait photo of a person img, natural skin, soft lighting, best quality, sharp focus"
 )
 _PHOTOMAKER_NEGATIVE = (
     "(asymmetry, worst quality, low quality, illustration, 3d, 2d, painting, "

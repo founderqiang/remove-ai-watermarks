@@ -236,21 +236,34 @@ def _warn_if_esrgan_unavailable(upscaler: str) -> None:
 
 
 def _restore_faces_options(f: Any) -> Any:
-    """Attach the face-restoration flag to an invisible-pipeline command.
+    """Attach the face-restoration flags to an invisible-pipeline command.
 
-    The post-pass uses PhotoMaker-V2 to regenerate each face from a CLIP+ArcFace
-    embedding. **NON-COMMERCIAL** -- PhotoMaker-V2 pulls InsightFace antelopev2/
-    buffalo_l model packs at runtime, which are research-only. A paid service
-    (raiw.cc, any monetized SaaS) MUST NOT use this flag.
+    Two methods. ``instantid`` (default; the `instantid` extra) regenerates each
+    face from an ArcFace embedding + landmark ControlNet -- semantic identity
+    plus weak spatial control, no original pixels. ``photomaker`` (the
+    `photomaker` extra) uses PhotoMaker-V2's CLIP+ArcFace dual encoder.
+    **BOTH ARE NON-COMMERCIAL**: they pull InsightFace antelopev2 / buffalo_l
+    model packs at runtime, which are research-only. A paid service (raiw.cc,
+    any monetized SaaS) MUST NOT use this flag.
     """
+    method = click.option(
+        "--restore-faces-method",
+        type=click.Choice(["instantid", "photomaker"]),
+        default="instantid",
+        help="Face-restore mechanism. 'instantid' (default) uses InstantID's ArcFace + "
+        "landmark ControlNet for stronger identity fidelity on single portraits. "
+        "'photomaker' uses PhotoMaker-V2's CLIP+ArcFace dual encoder. **BOTH are "
+        "NON-COMMERCIAL** (InsightFace antelopev2 / buffalo_l model packs are "
+        "research-only). Pick whichever extra you've installed; for personal / research "
+        "use only. Do NOT use in a paid service.",
+    )(f)
     return click.option(
         "--restore-faces/--no-restore-faces",
         default=False,
-        help="EXPERIMENTAL, opt-in, **NON-COMMERCIAL** -- needs the 'photomaker' extra "
-        "which pulls non-commercial InsightFace model packs. Restores face identity via "
-        "PhotoMaker-V2 (CLIP+ArcFace embedding -> fresh face); off by default, auto-skips "
-        "when no face is detected or the extra is absent.",
-    )(f)
+        help="EXPERIMENTAL, opt-in, **NON-COMMERCIAL**. Restore face identity via the "
+        "chosen --restore-faces-method (default: instantid); off by default, auto-skips "
+        "when no face is detected or the chosen extra is absent.",
+    )(method)
 
 
 def _watermark_region(det: DetectionResult, width: int, height: int) -> tuple[int, int, int, int]:
@@ -601,6 +614,7 @@ def cmd_invisible(
     min_resolution: int,
     controlnet_scale: float,
     restore_faces: bool,
+    restore_faces_method: str,
     upscaler: str,
     auto: bool,
     adaptive_polish: bool,
@@ -663,6 +677,7 @@ def cmd_invisible(
         upscaler=upscaler,
         vendor=vendor,
         restore_faces=restore_faces,
+        restore_faces_method=restore_faces_method,
     )
     elapsed = time.monotonic() - t0
 
@@ -864,6 +879,7 @@ def cmd_all(
     min_resolution: int,
     controlnet_scale: float,
     restore_faces: bool,
+    restore_faces_method: str,
     upscaler: str,
     auto: bool,
     adaptive_polish: bool,
@@ -972,6 +988,7 @@ def cmd_all(
                 upscaler=upscaler,
                 vendor=vendor,
                 restore_faces=restore_faces,
+                restore_faces_method=restore_faces_method,
             )
             console.print("    Invisible watermark removed")
 
@@ -1027,6 +1044,7 @@ def _process_batch_image(
     max_resolution: int = 0,
     min_resolution: int = 1024,
     restore_faces: bool = False,
+    restore_faces_method: str = "instantid",
     controlnet_scale: float = 1.0,
     upscaler: str = "lanczos",
     auto: bool = False,
@@ -1105,6 +1123,7 @@ def _process_batch_image(
                 min_resolution=min_resolution,
                 upscaler=upscaler,
                 restore_faces=restore_faces,
+                restore_faces_method=restore_faces_method,
                 # Detect the vendor from the pristine original (`img_path`), not the
                 # visible-processed `out_path` whose C2PA is already gone.
                 vendor=vendor_for_strength(img_path),
@@ -1187,6 +1206,7 @@ def cmd_batch(
     max_resolution: int,
     min_resolution: int,
     restore_faces: bool,
+    restore_faces_method: str,
     controlnet_scale: float,
     upscaler: str,
     auto: bool,
@@ -1246,6 +1266,7 @@ def cmd_batch(
                     max_resolution=max_resolution,
                     min_resolution=min_resolution,
                     restore_faces=restore_faces,
+                    restore_faces_method=restore_faces_method,
                     controlnet_scale=controlnet_scale,
                     upscaler=upscaler,
                     auto=auto,
