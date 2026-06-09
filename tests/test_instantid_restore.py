@@ -74,7 +74,12 @@ class TestRestoreFacesInstantidControlFlow:
             def __call__(self, **kwargs):
                 # Save kwargs for assertion.
                 _FakePipe.last_kwargs = kwargs
-                img = Image.fromarray(np.full((1024, 1024, 3), fill_value, dtype=np.uint8))
+                # Gradient face so the color-match step shifts the mean but
+                # preserves contrast (the composite is then detectable as a
+                # variance change in the face region even with uniform canvas).
+                grad = np.linspace(0, fill_value, 1024, dtype=np.uint8)
+                arr = np.broadcast_to(grad[:, None, None], (1024, 1024, 3)).copy()
+                img = Image.fromarray(arr)
                 return _FakePipeOutput([img])
 
         return _FakePipe()
@@ -116,10 +121,11 @@ class TestRestoreFacesInstantidControlFlow:
         out = instantid_restore.restore_faces_instantid(
             orig, cleaned, detect_faces_fn=lambda _b: [(150, 150, 100, 100)]
         )
-        # The cleaned image should have shifted toward the fake-pipe fill (210)
-        # inside the face region.
-        assert out[200, 200, 0] > 150
-        # Corner pixels far outside the feather stay close to the cleaned base.
+        # The composite must have written non-uniform values into the face
+        # region (gradient survives color-match as variance), and the canvas
+        # corner stays close to the cleaned base.
+        face_region = out[170:230, 170:230]
+        assert int(face_region.std()) > 0
         assert int(out[0, 0, 0]) - int(cleaned[0, 0, 0]) <= 1
 
     def test_insightface_misses_face_skips_gracefully(self, monkeypatch):
