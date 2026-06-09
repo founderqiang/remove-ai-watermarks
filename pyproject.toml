@@ -76,52 +76,6 @@ lama = [
     "onnxruntime>=1.16.0",
     "huggingface-hub>=0.20.0",
 ]
-# **NON-COMMERCIAL.** Optional PhotoMaker-V2 SynthID-robust face-identity post-pass.
-# PhotoMaker-V2's ID encoder pulls an InsightFace ArcFace embedding at runtime, and
-# the pretrained InsightFace model packs (antelopev2, buffalo_l) are released under a
-# non-commercial / research-only license. A paid service (raiw.cc, any monetized SaaS)
-# MUST NOT use this extra. See `src/remove_ai_watermarks/photomaker_restore.py` and
-# `docs/synthid-robust-identity-research.md`. The PhotoMaker adapter weights
-# (photomaker-v2.bin) are Apache-2.0 and download on first use; the InsightFace model
-# packs download on first FaceAnalysis() (only triggered inside PhotoMaker's V2 forward).
-# Pins beyond the upstream PhotoMaker package itself patch missing declarations that
-# would otherwise break the load chain (verified empirically via the Modal cert sweep
-# 2026-06-04): einops (used in forward), peft (required by diffusers.fuse_lora),
-# onnxruntime (transitive via insightface), and insightface itself (required for the
-# package's __init__.py to even import).
-photomaker = [
-    "photomaker @ git+https://github.com/TencentARC/PhotoMaker.git",
-    "huggingface-hub>=0.20.0",
-    "einops>=0.7.0",
-    "insightface>=0.7.3",
-    "onnxruntime>=1.16.0",
-    "peft>=0.10.0",
-]
-# **NON-COMMERCIAL.** Optional InstantID SynthID-robust face-identity post-pass.
-# InstantID adapter weights (IdentityNet ControlNet + ip-adapter.bin) are Apache-2.0
-# from InstantX/InstantID on HuggingFace, BUT the runtime depends on InsightFace's
-# antelopev2 ArcFace pack (non-commercial / research-only). InstantX's maintainers
-# explicitly acknowledged this on HF (discussion #2) and stated intent to retrain
-# on commercial embedders -- as of the 2026-06-08 deep-research synthesis
-# (docs/synthid-robust-identity-research-2026-06-08.md) that retrain has not
-# shipped. A paid service (raiw.cc, any monetized SaaS) MUST NOT use this extra.
-# See `src/remove_ai_watermarks/instantid_restore.py`.
-#
-# Compared to the `photomaker` extra: InstantID adds spatial landmark conditioning
-# alongside the ArcFace semantic branch, giving stronger identity fidelity on
-# single portraits per the InstantID paper (arXiv:2401.07519). Both extras are
-# non-commercial; pick `instantid` by default for better identity, `photomaker`
-# when the InstantID community pipeline can't load.
-#
-# Loads via diffusers' community-pipeline mechanism (no upstream `instantid`
-# Python package on PyPI). Only direct deps are insightface (MIT code, the
-# non-commercial blocker is its MODEL packs) + onnxruntime (transitive via
-# insightface) + huggingface-hub (weights download).
-instantid = [
-    "insightface>=0.7.3",
-    "onnxruntime>=1.16.0",
-    "huggingface-hub>=0.20.0",
-]
 # Optional pre-diffusion super-resolution for small inputs (Real-ESRGAN). Loaded via
 # spandrel (MIT) -- a pure model-loader with NO basicsr dependency (it pulls only
 # torch / torchvision / safetensors / numpy / einops).
@@ -179,12 +133,6 @@ Repository = "https://github.com/wiltodelta/remove-ai-watermarks"
 # `requires = ["hatchling"]` once that release confirms the path.
 requires = ["hatchling<1.31"]
 build-backend = "hatchling.build"
-
-# Allow the `photomaker` extra to reference the upstream git URL directly (the
-# TencentARC/PhotoMaker package is not on PyPI). The extra itself is NON-COMMERCIAL
-# (see the photomaker block above and `photomaker_restore.py`).
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/remove_ai_watermarks"]

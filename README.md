@@ -23,7 +23,7 @@ If this tool saves you time, consider [sponsoring its development](https://githu
 - **AI metadata stripping** — EXIF, PNG text chunks, C2PA provenance manifests (PNG / JPEG / AVIF / HEIF / JPEG-XL, **MP4 / MOV / M4V / M4A** at the container level, and **WebM / MP3 / WAV / FLAC / OGG** losslessly via ffmpeg), XMP DigitalSourceType
 - **"Made with AI" label removal** — removes the AI-disclosure metadata that platforms read to apply automatic labels (useful for clearing a false-positive label from a human-edited photograph)
 - **Analog Humanizer** — optional film grain and chromatic aberration post-processing
-- **Text and face preservation (experimental)** — optional `--pipeline controlnet` adds a canny ControlNet that keeps text and face structure sharp through the removal pass (without copying original pixels, so SynthID is still removed). Canny preserves face *structure*, not *identity* (the regenerated face drifts in likeness). The optional `--restore-faces` post-pass (`instantid` default or `photomaker`, both **NON-COMMERCIAL**, off by default) does NOT recover the original face — it **regenerates** it from an ArcFace embedding via SDXL diffusion, which inherently makes the output look more AI-generated than the cleaned image. **For production face preservation, leave restore OFF and use the cleaned image as-is.**
+- **Text and face preservation (experimental)** — optional `--pipeline controlnet` adds a canny ControlNet that keeps text and face structure sharp through the removal pass (without copying original pixels, so SynthID is still removed). Canny preserves face *structure*, not *identity* (the regenerated face drifts in likeness). The library does not ship a face-restore extra: every approach evaluated (GFPGAN-on-cleaned, PhotoMaker-V2, InstantID txt2img, InstantID img2img-on-cleaned) regenerated the face via SDXL and made the output look more AI-generated than the cleaned image. The cleaned controlnet output is the least-AI face state achievable without re-introducing SynthID.
 - **Batch processing** — process entire directories
 - **Detection** — three-stage NCC watermark detection with confidence scoring
 - **Provenance detection (`identify`)** — aggregate C2PA issuer, the C2PA soft-binding forensic-watermark vendor (Adobe TrustMark, Digimarc, Imatag, ...), IPTC "Made with AI" plus the IPTC 2025.1 `AISystemUsed` field, embedded SD/ComfyUI params, EXIF/XMP generator tags, the xAI/Grok EXIF signature, the China TC260 AIGC label (XMP, PNG chunk, or EXIF), the HuggingFace `hf-job-id` job marker, the SynthID metadata proxy, the visible marks (Gemini sparkle plus the Doubao "豆包AI生成" / Jimeng "即梦AI" / Samsung Galaxy AI "Contenuti generati dall'AI" text marks), the open SD/SDXL/FLUX invisible watermark, and (with the `trustmark` extra) the open Adobe TrustMark watermark into one origin-platform + watermark-inventory verdict (`--json` for machine output)
@@ -128,7 +128,7 @@ image → encode to latent space (VAE) at native resolution
 >
 > **`--pipeline controlnet` preserves text and face structure (experimental, opt-in).** It runs the same SDXL img2img scrub but adds a canny ControlNet that conditions the regeneration on the image's edge map, so text and structure stay sharp at the strengths that remove SynthID. The watermark removal still comes from the img2img regeneration (`--strength`); the ControlNet only preserves structure — no original pixels are copied or frozen, so SynthID does not survive. `--controlnet-scale` tunes the preservation strength (higher = closer to the original structure). Runs fp32 on mps/cpu (fp16 only on cuda/xpu, where the fp16-fixed SDXL VAE is loaded automatically).
 >
-> **`--restore-faces` REGENERATES faces; it does NOT recover original pixels.** Two methods, both **NON-COMMERCIAL**, both off by default: `instantid` (default, the `instantid` extra; InstantID img2img-on-cleaned + ArcFace embedding + landmark ControlNet) and `photomaker` (the `photomaker` extra; PhotoMaker-V2 txt2img + CLIP+ArcFace embedding). Both crop the face region from the cleaned image and run SDXL diffusion conditioned on an ArcFace embedding from the original — the output face pixels are diffusion-fresh so SynthID is not re-introduced, **but the output face inherently looks more AI-generated than the cleaned image**: every pixel is SDXL-decoded from a semantic embedding, gaining the typical "clean skin" gloss and losing the exact original identity. The cleaned image from the main controlnet 0.20 pass is the least-AI state we can reach without re-introducing SynthID; any restore on top of it trades original-look for embedding-driven regeneration. **For production face preservation, leave `--restore-faces` OFF.** Both extras are NON-COMMERCIAL because their ArcFace embedder is InsightFace's antelopev2 pack which is research-only; the empirical case for not shipping them in prod is the AI-look regardless of license (see `docs/synthid-robust-identity-research-2026-06-08.md`).
+> **No face-restore extra in the library.** Every ArcFace-based regeneration approach we evaluated (GFPGAN-on-cleaned, PhotoMaker-V2, InstantID txt2img, InstantID img2img-on-cleaned at three parameter sweeps, 2026-06-04 - 2026-06-08 Modal cert sweeps) regenerated the face via SDXL diffusion — the output face pixels were diffusion-fresh (SynthID not re-introduced), but the face inherently looked more AI-generated than the cleaned image (SDXL "clean skin" gloss, lost original identity precision). The cleaned image from the main controlnet 0.20 pass is the least-AI face state we can reach without re-introducing SynthID. Empirical conclusion in `docs/synthid-robust-identity-research-2026-06-08.md`.
 
 SDXL is the default since May 2026: empirically defeats SynthID v2 on Gemini 3 Pro outputs, where the older SD-1.5 pipeline at 768 px did not. The SD-1.5 path was removed once it was verified not to handle v2. Note the scope: this defeats the SynthID *verifier*, which is not the same as being forensically indistinguishable from a real photo. Recent work ([arXiv:2605.09203](https://arxiv.org/abs/2605.09203)) shows watermark-removal pipelines leave detectable traces, so a separate "this image was processed" classifier can still flag the output.
 
@@ -136,7 +136,7 @@ SDXL is the default since May 2026: empirically defeats SynthID v2 on Gemini 3 P
 
 > **Technical deep-dive:** see [`docs/synthid.md`](docs/synthid.md) for a primary-source-cited breakdown of how SynthID works mechanically (post-hoc encoder/decoder, 136-bit payload, pixel-space embedding), what it empirically survives (JPEG, crop, resize: ~99.98% TPR at 0.1% FPR from arXiv:2510.09263), what removes it, and the forensic-stealth tradeoff (all known removal attacks are detectable at >98% TPR@1%FPR per arXiv:2605.09203).
 
-**Text and face preservation** (experimental, opt-in `--pipeline controlnet`): adds a canny ControlNet so text and face *structure* stay sharp through the removal pass, without copying or freezing any original pixels (so SynthID is still removed). Tune the preservation strength with `--controlnet-scale`. Canny preserves structure but not face *identity*: the regenerated face drifts in likeness. The optional `--restore-faces` post-pass would regenerate the face from an ArcFace embedding, but every shipped method makes the face look more AI-generated (see the callout above) — for production face preservation leave restore OFF.
+**Text and face preservation** (experimental, opt-in `--pipeline controlnet`): adds a canny ControlNet so text and face *structure* stay sharp through the removal pass, without copying or freezing any original pixels (so SynthID is still removed). Tune the preservation strength with `--controlnet-scale`. Canny preserves structure but not face *identity*: the regenerated face drifts in likeness. The library does not ship a face-restore extra (see the callout above).
 
 **Analog Humanizer**: optional film grain and chromatic aberration injection that mimics a photo of a screen, raising the bar for AI-generated image classifiers. (It frustrates generic classifiers but does not guarantee forensic invisibility — see the [arXiv:2605.09203](https://arxiv.org/abs/2605.09203) note above.)
 
@@ -212,17 +212,6 @@ After installation the `remove-ai-watermarks` command is available system-wide.
 >
 > ```bash
 > pip install -e ".[trustmark]"   # or: uv pip install -e ".[trustmark]"
-> ```
->
-> To regenerate face identity after invisible removal (the `--restore-faces`
-> PhotoMaker-V2 post-pass, experimental and opt-in, **NON-COMMERCIAL** because
-> PhotoMaker-V2 pulls non-commercial InsightFace model packs at runtime), install
-> the `photomaker` extra. The PhotoMaker-V2 adapter weights and InsightFace face
-> packs download on first use. Do NOT install this extra in a commercial / paid
-> service:
->
-> ```bash
-> pip install -e ".[photomaker]"   # or: uv pip install -e ".[photomaker]"
 > ```
 >
 > For sharper upscaling of small inputs before diffusion (`--upscaler esrgan`,
@@ -306,10 +295,10 @@ remove-ai-watermarks invisible image.png -o clean.png --humanize 4.0 --unsharp 0
 # Strength is vendor-adaptive by default (OpenAI 0.10 / Google 0.15); override
 # with --strength. To preserve text/face structure, use --pipeline controlnet
 # Or let it choose: --auto picks the pipeline, face restore, and an adaptive polish
-# from the image content (controlnet when there is text/structure, face restore when
-# a face is present, polish that restores the input's detail level while sparing
-# text). Every choice is overridable: --pipeline, --no-restore-faces,
-# --no-adaptive-polish all win over the auto pick. Experimental.
+# from the image content (controlnet when there is text/structure, polish that
+# restores the input's detail level while sparing text). Every choice is
+# overridable: --pipeline and --no-adaptive-polish win over the auto pick.
+# Experimental.
 # (SDXL + canny ControlNet); tune preservation with --controlnet-scale. Add
 
 # Check / strip AI metadata (C2PA, EXIF, "Made with AI" labels)

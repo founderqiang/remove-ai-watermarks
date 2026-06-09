@@ -85,7 +85,6 @@ class AutoConfig:
     """Resolved quality modes from content analysis (the ``--auto`` plan)."""
 
     pipeline: str  # "default" | "controlnet"
-    restore_faces: bool
     adaptive_polish: bool  # restore the input's detail level (sharpen + masked grain), sparing text
     unsharp: float  # fixed-polish knobs, 0 in auto (the adaptive polish replaces them)
     humanize: float
@@ -104,14 +103,13 @@ class AutoConfig:
         if self.has_text:
             bits.append("text")
         bits.append(f"edges={self.edge_density:.3f}")
-        rf = ", face-restore on" if self.restore_faces else ""
         if self.adaptive_polish:
             polish = ", adaptive polish"
         elif self.unsharp or self.humanize:
             polish = f", unsharp {self.unsharp}/grain {self.humanize}"
         else:
             polish = ""
-        return f"{'+'.join(bits)} -> {self.pipeline} pipeline{rf}{polish}"
+        return f"{'+'.join(bits)} -> {self.pipeline} pipeline{polish}"
 
 
 def _to_bgr(image: NDArray[Any]) -> NDArray[Any]:
@@ -251,12 +249,10 @@ def plan(image_path: Path) -> AutoConfig | None:
 
     structureless = (not has_face) and (not has_text) and edges < _STRUCTURELESS_EDGE_MAX
     pipeline = "default" if structureless else "controlnet"
-    restore_faces = has_face
-    smoothing = pipeline == "controlnet" or restore_faces
+    smoothing = pipeline == "controlnet"
 
     cfg = AutoConfig(
         pipeline=pipeline,
-        restore_faces=restore_faces,
         adaptive_polish=smoothing,  # adaptive (detail-targeted) polish when a smoothing pass ran
         unsharp=0.0,
         humanize=0.0,

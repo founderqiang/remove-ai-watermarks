@@ -64,7 +64,6 @@ class TestPlan:
         cfg = auto_config.plan(_write(flat, tmp_path))
         assert cfg is not None
         assert cfg.pipeline == "default"  # structure-less -> plain SDXL
-        assert cfg.restore_faces is False
         assert cfg.adaptive_polish is False  # no smoothing pass -> no polish
         assert cfg.unsharp == 0.0
         assert cfg.humanize == 0.0
@@ -78,13 +77,12 @@ class TestPlan:
         # Text creates edges above the structure-less floor -> controlnet preserves them.
         assert cfg.pipeline == "controlnet"
 
-    def test_face_routes_to_restore_and_controlnet_and_polish(self, tmp_path, monkeypatch):
+    def test_face_routes_to_controlnet_and_polish(self, tmp_path, monkeypatch):
         monkeypatch.setattr(auto_config, "detect_face", lambda _img: True)
         flat = np.full((300, 300, 3), 128, dtype=np.uint8)
         cfg = auto_config.plan(_write(flat, tmp_path))
         assert cfg is not None
         assert cfg.has_face
-        assert cfg.restore_faces
         assert cfg.pipeline == "controlnet"
         assert cfg.adaptive_polish  # smoothing pass ran -> adaptive polish on
         assert cfg.unsharp == 0.0  # fixed knobs off; the adaptive polish replaces them
@@ -103,7 +101,6 @@ class TestReason:
     def test_reason_summarizes_plan(self):
         cfg = auto_config.AutoConfig(
             pipeline="controlnet",
-            restore_faces=True,
             adaptive_polish=True,
             unsharp=0.0,
             humanize=0.0,
@@ -117,5 +114,4 @@ class TestReason:
         r = cfg.reason
         assert "controlnet" in r
         assert "face" in r
-        assert "face-restore on" in r
         assert "adaptive polish" in r

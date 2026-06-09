@@ -523,7 +523,6 @@ class TestBatchCommand:
         output_dir = tmp_path / "output"
         plan = auto_config.AutoConfig(
             pipeline="controlnet",
-            restore_faces=True,
             adaptive_polish=True,
             unsharp=0.0,
             humanize=0.0,

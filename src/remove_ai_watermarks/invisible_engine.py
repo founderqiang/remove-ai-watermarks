@@ -164,8 +164,6 @@ class InvisibleEngine:
         max_resolution: int = 0,
         min_resolution: int = 1024,
         vendor: str | None = None,
-        restore_faces: bool = False,
-        restore_faces_method: str = "instantid",
         unsharp: float = 0.0,
         adaptive_polish: bool = False,
         upscaler: str = "lanczos",
@@ -181,20 +179,9 @@ class InvisibleEngine:
             guidance_scale: Classifier-free guidance scale.
             seed: Random seed for reproducibility.
             humanize: Intensity of Analog Humanizer film grain (0 = off).
-            restore_faces: EXPERIMENTAL, opt-in (default False). **NON-COMMERCIAL.**
-                Run the face-identity post-pass when faces are present. Method is
-                chosen by ``restore_faces_method`` -- ``instantid`` (default,
-                stronger identity, needs the ``instantid`` extra) or ``photomaker``
-                (PhotoMaker-V2, needs the ``photomaker`` extra). Both extras pull
-                non-commercial InsightFace model packs. Auto-skips with a debug log
-                when the chosen extra is absent or no face is detected. See
-                ``instantid_restore.py`` / ``photomaker_restore.py``.
-            restore_faces_method: ``instantid`` (default) or ``photomaker``. Both
-                NON-COMMERCIAL; pick the one whose extra you've installed.
             unsharp: Final unsharp-mask sharpening strength (0 = off, default).
-                Applied last (after face restoration) to counter the soft,
-                over-smoothed look of the diffusion + restoration; ~0.5-0.8 is a
-                safe range, higher risks edge halos.
+                Applied last to counter the soft / over-smoothed look of the
+                diffusion pass; ~0.5-0.8 is a safe range, higher risks edge halos.
             adaptive_polish: When True (the --auto mode default), restore the input's
                 detail level in the softened output instead of fixed unsharp/humanize:
                 a capped unsharp + edge-masked grain targeting the input's Laplacian
@@ -316,19 +303,7 @@ class InvisibleEngine:
                     out_cv = cv2.resize(out_cv, orig_size, interpolation=cv2.INTER_LANCZOS4)
                     image_io.imwrite(out_path, out_cv)
 
-            # Optional GFPGAN face-polish post-pass: sharpens and re-synthesizes each
-            # face from GFPGAN's StyleGAN2 prior, running on the DIFFUSION-CLEANED image
-            # (not the original) -- so SynthID is not re-introduced (the input pixels
-            # GFPGAN derives from are already SynthID-free). Auto-skips when faces are
-            # absent or the optional `restore` extra is not installed.
-            if restore_faces:
-                if restore_faces_method == "photomaker":
-                    self._restore_faces_photomaker(out_path, image, seed)
-                else:
-                    self._restore_faces_instantid(out_path, image, seed)
-
-            # Final sharpening, LAST so it crisps the face-restored result too (a
-            # pre-restore sharpen would be smoothed back over by the face pass).
+            # Final sharpening.
             if unsharp > 0.0:
                 import cv2
 
@@ -363,99 +338,6 @@ class InvisibleEngine:
             # _tmp_path is always set above (we persist the image unconditionally).
             if _tmp_path.exists():
                 _tmp_path.unlink()
-
-    def _restore_faces_instantid(
-        self,
-        out_path: Path,
-        original_image: Any,
-        seed: int | None,
-    ) -> None:
-        """Run the InstantID face-identity post-pass on the cleaned ``out_path``.
-
-        **NON-COMMERCIAL** (see ``instantid_restore.py``). InstantID conditions on
-        an ArcFace embedding (semantic) plus a landmark ControlNet (geometry,
-        content-free) -- no original face pixels enter the diffusion. Best-effort:
-        any failure (missing extra, model load, runtime error) logs a warning and
-        leaves the un-restored cleaned output in place.
-        """
-        from remove_ai_watermarks import instantid_restore
-
-        if not instantid_restore.is_available():
-            logger.debug("restore_faces requested but the 'instantid' extra is not installed; skipping")
-            return
-
-        try:
-            import cv2
-            import numpy as np
-
-            from remove_ai_watermarks import image_io
-
-            cleaned_bgr = image_io.imread(out_path, cv2.IMREAD_COLOR)
-            if cleaned_bgr is None:
-                logger.warning("restore_faces: could not read cleaned output %s; skipping", out_path)
-                return
-
-            original_rgb = original_image.convert("RGB")
-            original_bgr = cv2.cvtColor(np.array(original_rgb), cv2.COLOR_RGB2BGR)
-            cleaned_size = (cleaned_bgr.shape[1], cleaned_bgr.shape[0])
-            if (original_bgr.shape[1], original_bgr.shape[0]) != cleaned_size:
-                original_bgr = cv2.resize(original_bgr, cleaned_size, interpolation=cv2.INTER_LANCZOS4)
-
-            if self._progress_callback:
-                self._progress_callback("Restoring face identity (InstantID post-pass)...")
-            restored = instantid_restore.restore_faces_instantid(original_bgr, cleaned_bgr, seed=seed)
-            image_io.imwrite(out_path, restored)
-        except Exception as e:
-            logger.warning(
-                "restore_faces post-pass failed (%s: %s); keeping un-restored output",
-                type(e).__name__,
-                e,
-                exc_info=True,
-            )
-
-    def _restore_faces_photomaker(
-        self,
-        out_path: Path,
-        original_image: Any,
-        seed: int | None,
-    ) -> None:
-        """Run the PhotoMaker-V2 face-identity post-pass on the cleaned ``out_path``.
-
-        **NON-COMMERCIAL** (see ``photomaker_restore.py``). PhotoMaker carries identity
-        in a CLIP+ArcFace embedding and regenerates fresh face pixels conditioned on
-        it, so the watermark is not transported. Best-effort: any failure (missing
-        extra, model load, runtime error) logs a warning and leaves the un-restored
-        cleaned output in place.
-        """
-        from remove_ai_watermarks import photomaker_restore
-
-        if not photomaker_restore.is_available():
-            logger.debug("restore_faces requested but the 'photomaker' extra is not installed; skipping")
-            return
-
-        try:
-            import cv2
-            import numpy as np
-
-            from remove_ai_watermarks import image_io
-
-            cleaned_bgr = image_io.imread(out_path, cv2.IMREAD_COLOR)
-            if cleaned_bgr is None:
-                logger.warning("restore_faces: could not read cleaned output %s; skipping", out_path)
-                return
-
-            original_rgb = original_image.convert("RGB")
-            original_bgr = cv2.cvtColor(np.array(original_rgb), cv2.COLOR_RGB2BGR)
-            cleaned_size = (cleaned_bgr.shape[1], cleaned_bgr.shape[0])
-            if (original_bgr.shape[1], original_bgr.shape[0]) != cleaned_size:
-                original_bgr = cv2.resize(original_bgr, cleaned_size, interpolation=cv2.INTER_LANCZOS4)
-
-            if self._progress_callback:
-                self._progress_callback("Restoring face identity (PhotoMaker-V2 post-pass)...")
-            restored = photomaker_restore.restore_faces_photomaker(original_bgr, cleaned_bgr, seed=seed)
-            image_io.imwrite(out_path, restored)
-        except Exception as e:
-            logger.warning("restore_faces post-pass failed (%s); keeping un-restored output", e)
 
     def remove_watermark_batch(
         self,

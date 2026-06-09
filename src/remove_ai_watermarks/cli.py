@@ -174,7 +174,7 @@ _auto_option = click.option(
     is_flag=True,
     default=False,
     help="Auto-pick the pipeline, face restore, and adaptive polish from image content. "
-    "Every choice is overridable -- an explicit --pipeline / --restore-faces / --adaptive-polish "
+    "Every choice is overridable -- an explicit --pipeline / --adaptive-polish "
     "always wins. EXPERIMENTAL.",
 )
 
@@ -192,9 +192,8 @@ def _apply_auto(
     ctx: click.Context,
     source: Path,
     pipeline: str,
-    restore_faces: bool,
     adaptive_polish: bool,
-) -> tuple[str, bool, bool]:
+) -> tuple[str, bool]:
     """Resolve ``--auto``: plan the three content-adaptive modes (pipeline, face
     restore, adaptive polish) from the image, overriding only the ones the user left
     at their default (an explicit flag always wins). The fixed ``--unsharp``/
@@ -205,19 +204,17 @@ def _apply_auto(
     cfg = auto_config.plan(source)
     if cfg is None:
         console.print("  Auto: could not read image; using defaults")
-        return pipeline, restore_faces, adaptive_polish
+        return pipeline, adaptive_polish
 
     def _is_default(name: str) -> bool:
         return ctx.get_parameter_source(name) == click.core.ParameterSource.DEFAULT
 
     if _is_default("pipeline"):
         pipeline = cfg.pipeline
-    if _is_default("restore_faces"):
-        restore_faces = cfg.restore_faces
     if _is_default("adaptive_polish"):
         adaptive_polish = cfg.adaptive_polish
     console.print(f"  Auto: {cfg.reason}")
-    return pipeline, restore_faces, adaptive_polish
+    return pipeline, adaptive_polish
 
 
 def _warn_if_esrgan_unavailable(upscaler: str) -> None:
@@ -233,43 +230,6 @@ def _warn_if_esrgan_unavailable(upscaler: str) -> None:
 
     if not _upscaler.is_available():
         console.print("  Note: --upscaler esrgan needs the 'esrgan' extra; falling back to Lanczos.")
-
-
-def _restore_faces_options(f: Any) -> Any:
-    """Attach the face-restoration flags to an invisible-pipeline command.
-
-    Both methods REGENERATE the face from an ArcFace embedding via SDXL diffusion
-    -- they do NOT recover original pixels. Every output face pixel is
-    diffusion-fresh, so the regenerated face inherently looks MORE AI-generated
-    than the cleaned image (gloss, symmetric pores, SDXL "clean skin"
-    aesthetic). For production face preservation, leave the flag OFF and use
-    the cleaned image as-is. The two methods are kept for research / personal
-    use where users explicitly want identity regeneration. **BOTH are
-    NON-COMMERCIAL**: they pull InsightFace antelopev2 / buffalo_l model packs
-    which are research-only. A paid service (raiw.cc, any monetized SaaS) MUST
-    NOT use this flag.
-    """
-    method = click.option(
-        "--restore-faces-method",
-        type=click.Choice(["instantid", "photomaker"]),
-        default="instantid",
-        help="Face-regeneration mechanism (no method recovers original pixels; both "
-        "REGENERATE the face via SDXL). 'instantid' (default) uses InstantID img2img on "
-        "the cleaned crop with ArcFace + landmark ControlNet. 'photomaker' uses "
-        "PhotoMaker-V2 txt2img + CLIP+ArcFace dual encoder. **BOTH are NON-COMMERCIAL** "
-        "(InsightFace antelopev2 / buffalo_l packs are research-only). For personal / "
-        "research use only.",
-    )(f)
-    return click.option(
-        "--restore-faces/--no-restore-faces",
-        default=False,
-        help="EXPERIMENTAL, opt-in, **NON-COMMERCIAL**. **REGENERATES the face** (does "
-        "NOT recover original pixels) via the chosen --restore-faces-method; the "
-        "regenerated face looks more AI-generated than the cleaned image. Off by "
-        "default; auto-skips when no face is detected or the chosen extra is absent. "
-        "For production face preservation leave this OFF and use the cleaned image "
-        "as-is.",
-    )(method)
 
 
 def _watermark_region(det: DetectionResult, width: int, height: int) -> tuple[int, int, int, int]:
@@ -597,7 +557,6 @@ def cmd_erase(
     help="Cap long side (px) before diffusion; 0 = native (best quality, like raiw.cc). Raise only on GPU/MPS OOM.",
 )
 @_controlnet_scale_option
-@_restore_faces_options
 @_min_resolution_option
 @_unsharp_option
 @_upscaler_option
@@ -619,8 +578,6 @@ def cmd_invisible(
     max_resolution: int,
     min_resolution: int,
     controlnet_scale: float,
-    restore_faces: bool,
-    restore_faces_method: str,
     upscaler: str,
     auto: bool,
     adaptive_polish: bool,
@@ -643,7 +600,7 @@ def cmd_invisible(
     source = _validate_image(source)
     _warn_if_esrgan_unavailable(upscaler)
     if auto:
-        pipeline, restore_faces, adaptive_polish = _apply_auto(ctx, source, pipeline, restore_faces, adaptive_polish)
+        pipeline, adaptive_polish = _apply_auto(ctx, source, pipeline, adaptive_polish)
     if output is None:
         output = source.with_stem(source.stem + "_clean")
 
@@ -682,8 +639,6 @@ def cmd_invisible(
         min_resolution=min_resolution,
         upscaler=upscaler,
         vendor=vendor,
-        restore_faces=restore_faces,
-        restore_faces_method=restore_faces_method,
     )
     elapsed = time.monotonic() - t0
 
@@ -859,7 +814,6 @@ def cmd_identify(ctx: click.Context, source: Path, no_visible: bool, as_json: bo
     help="Cap long side (px) before diffusion; 0 = native (best quality, like raiw.cc). Raise only on GPU/MPS OOM.",
 )
 @_controlnet_scale_option
-@_restore_faces_options
 @_min_resolution_option
 @_unsharp_option
 @_upscaler_option
@@ -884,8 +838,6 @@ def cmd_all(
     max_resolution: int,
     min_resolution: int,
     controlnet_scale: float,
-    restore_faces: bool,
-    restore_faces_method: str,
     upscaler: str,
     auto: bool,
     adaptive_polish: bool,
@@ -905,7 +857,7 @@ def cmd_all(
     source = _validate_image(source)
     _warn_if_esrgan_unavailable(upscaler)
     if auto:
-        pipeline, restore_faces, adaptive_polish = _apply_auto(ctx, source, pipeline, restore_faces, adaptive_polish)
+        pipeline, adaptive_polish = _apply_auto(ctx, source, pipeline, adaptive_polish)
 
     if output is None:
         output = source.with_stem(source.stem + "_clean")
@@ -993,8 +945,6 @@ def cmd_all(
                 min_resolution=min_resolution,
                 upscaler=upscaler,
                 vendor=vendor,
-                restore_faces=restore_faces,
-                restore_faces_method=restore_faces_method,
             )
             console.print("    Invisible watermark removed")
 
@@ -1049,8 +999,6 @@ def _process_batch_image(
     unsharp: float = 0.0,
     max_resolution: int = 0,
     min_resolution: int = 1024,
-    restore_faces: bool = False,
-    restore_faces_method: str = "instantid",
     controlnet_scale: float = 1.0,
     upscaler: str = "lanczos",
     auto: bool = False,
@@ -1104,9 +1052,7 @@ def _process_batch_image(
             # pipeline choice changes the engine ctor, so cache one engine per pipeline
             # (controlnet vs default) rather than a single shared instance.
             if auto:
-                pipeline, restore_faces, adaptive_polish = _apply_auto(
-                    ctx, img_path, pipeline, restore_faces, adaptive_polish
-                )
+                pipeline, adaptive_polish = _apply_auto(ctx, img_path, pipeline, adaptive_polish)
             engines = ctx.obj.setdefault("_inv_engines", {})
             if pipeline not in engines:
                 engines[pipeline] = InvisibleEngine(
@@ -1128,8 +1074,6 @@ def _process_batch_image(
                 max_resolution=max_resolution,
                 min_resolution=min_resolution,
                 upscaler=upscaler,
-                restore_faces=restore_faces,
-                restore_faces_method=restore_faces_method,
                 # Detect the vendor from the pristine original (`img_path`), not the
                 # visible-processed `out_path` whose C2PA is already gone.
                 vendor=vendor_for_strength(img_path),
@@ -1187,7 +1131,6 @@ def _process_batch_image(
     default=0,
     help="Cap long side (px) before diffusion; 0 = native (best quality, like raiw.cc). Raise only on GPU/MPS OOM.",
 )
-@_restore_faces_options
 @_min_resolution_option
 @_unsharp_option
 @_upscaler_option
@@ -1211,8 +1154,6 @@ def cmd_batch(
     unsharp: float,
     max_resolution: int,
     min_resolution: int,
-    restore_faces: bool,
-    restore_faces_method: str,
     controlnet_scale: float,
     upscaler: str,
     auto: bool,
@@ -1271,8 +1212,6 @@ def cmd_batch(
                     unsharp=unsharp,
                     max_resolution=max_resolution,
                     min_resolution=min_resolution,
-                    restore_faces=restore_faces,
-                    restore_faces_method=restore_faces_method,
                     controlnet_scale=controlnet_scale,
                     upscaler=upscaler,
                     auto=auto,
