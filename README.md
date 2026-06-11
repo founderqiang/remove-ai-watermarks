@@ -232,6 +232,10 @@ After installation the `remove-ai-watermarks` command is available system-wide.
 > pip install -e ".[gpu]"   # or: uv pip install -e ".[gpu]"
 > ```
 >
+> Without the `[gpu]` extra, `all` still runs the visible and metadata steps, but
+> it skips the invisible (SynthID) step, prints a clear warning, and exits with a
+> non-zero status so a skipped step is not mistaken for a clean result.
+>
 > To let `identify` decode the open Stable Diffusion / SDXL / FLUX invisible
 > watermarks, install the `detect` extra (adds the `invisible-watermark` decoder):
 >

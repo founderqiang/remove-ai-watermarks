@@ -918,6 +918,13 @@ def cmd_all(
 
     t0 = time.monotonic()
 
+    # Tracks whether step 2 (invisible / SynthID removal) was skipped because the
+    # GPU extra is missing. A skipped step 2 still produces an output file (visible
+    # mark + metadata stripped), so without a loud end-of-run notice + non-zero exit
+    # the user mistakes it for a clean result and ships an image that still carries
+    # the invisible watermark (recurring reports: #14, #47).
+    synthid_skipped = False
+
     # Use a temp file for intermediate results so the user doesn't see
     # a partial output file during long model downloads.
     import tempfile
@@ -954,6 +961,7 @@ def cmd_all(
         from remove_ai_watermarks.invisible_engine import is_available as invisible_available
 
         if not invisible_available():
+            synthid_skipped = True
             console.print(
                 "    Warning: Skipped - GPU dependencies not installed.\n"
                 "    Install them with: pip install 'remove-ai-watermarks[gpu]'"
@@ -1027,6 +1035,24 @@ def cmd_all(
     elapsed = time.monotonic() - t0
     size_kb = output.stat().st_size / 1024
     console.print(f"\n  Done: {output}  ({size_kb:.0f} KB, {elapsed:.1f}s total)")
+
+    # A skipped invisible step is the single most common "it didn't work" report:
+    # the output looks processed but still carries the SynthID watermark. Make that
+    # impossible to miss -- a prominent banner plus a non-zero exit so scripts and
+    # batch callers can detect the incomplete run instead of trusting the file.
+    if synthid_skipped:
+        console.print(
+            "\n  =====================================================================\n"
+            "  WARNING: the invisible (SynthID) watermark was NOT removed.\n"
+            "  Step 2 was skipped because the GPU dependencies are not installed,\n"
+            "  so this output still carries the invisible watermark -- only the\n"
+            "  visible mark and metadata were stripped.\n"
+            "\n"
+            "  Install the extra and rerun to remove it:\n"
+            "    pip install 'remove-ai-watermarks[gpu]'\n"
+            "  ====================================================================="
+        )
+        raise SystemExit(1)
 
 
 # -- Batch command ----------------------------------------------------

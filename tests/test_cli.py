@@ -389,6 +389,19 @@ class TestAllCommand:
         assert result.exit_code == 0, result.output
         mock_best.assert_called()  # the registry auto-detector drove the visible pass
 
+    def test_all_loud_warning_and_nonzero_exit_when_gpu_missing(self, runner, sample_png, tmp_path):
+        """Regression (#14/#47): when the GPU extra is absent the invisible step is
+        skipped, but the output still looks processed -- the run must fail loudly
+        (prominent banner + non-zero exit) so a skipped SynthID pass is not mistaken
+        for a clean result. The output file is still written (visible + metadata)."""
+        output = tmp_path / "clean.png"
+        with patch("remove_ai_watermarks.invisible_engine.is_available", return_value=False):
+            result = runner.invoke(main, ["all", str(sample_png), "-o", str(output)])
+        assert result.exit_code != 0, result.output
+        assert "NOT removed" in result.output
+        assert "remove-ai-watermarks[gpu]" in result.output
+        assert output.exists()  # visible + metadata still produced a file
+
     def test_all_preserves_rgba_across_invisible_step(self, runner, tmp_path):
         """Regression: ``all`` must keep transparency even when the invisible
         step writes a 3-channel result (as the real diffusion engine does).
