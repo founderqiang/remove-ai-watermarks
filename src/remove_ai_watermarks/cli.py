@@ -13,7 +13,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 import click
 
@@ -317,6 +317,45 @@ def _remove_visible_auto(
     return result, best.label
 
 
+# Exit code for the standalone ``visible`` command when no visible mark was
+# removed -- distinct from success (0) and a hard error (1) so a wrapping
+# service can tell "nothing to do here" apart and surface guidance instead of
+# re-serving the unchanged input as a finished result.
+EXIT_NO_VISIBLE_MARK = 2
+
+
+def _no_visible_mark_exit(source: Path) -> NoReturn:
+    """Explain why no visible watermark was removed, then exit non-zero.
+
+    The visible registry handles only known visual marks (the Gemini sparkle and
+    the Doubao/Jimeng/Samsung text strips). Most real uploads carry no such mark
+    -- frequently an invisible/metadata watermark instead (e.g. an OpenAI or
+    Gemini image whose only signal is C2PA + SynthID). Returning the input
+    unchanged with exit 0 reads as success to a caller and re-serves the
+    watermarked image -- the recurring "it didn't work" report. Instead, run a
+    cheap metadata-only :func:`identify`, tell the user what the image actually
+    carries and which command removes it, and exit
+    :data:`EXIT_NO_VISIBLE_MARK`.
+    """
+    from remove_ai_watermarks.identify import identify
+
+    report = identify(source, check_visible=False, check_invisible=False)
+    if report.is_ai_generated and report.watermarks:
+        plat = report.platform or "an unidentified platform"
+        console.print(
+            f"  This image carries an invisible/metadata watermark ({plat}), not a visible mark,\n"
+            "  so the 'visible' command cannot remove it. Run the full pipeline instead:\n"
+            f"    remove-ai-watermarks all {source.name}"
+        )
+    else:
+        console.print(
+            "  No AI provenance signal found either. If there is a logo or object to remove,\n"
+            "  target it directly with the region eraser:\n"
+            f"    remove-ai-watermarks erase {source.name} --region x,y,w,h"
+        )
+    raise SystemExit(EXIT_NO_VISIBLE_MARK)
+
+
 def _read_bgr_and_alpha(path: Path) -> tuple[NDArray[Any] | None, NDArray[Any] | None]:
     """Read an image preserving its alpha channel separately.
 
@@ -450,10 +489,9 @@ def cmd_visible(
     if mark == "auto":
         best = registry.best_auto_mark(image)
         if best is None:
-            console.print("  Warning: No known visible mark detected (gemini / doubao).")
+            console.print("  No known visible mark detected (gemini / doubao / jimeng / samsung).")
             if detect:
-                console.print("  Skipping. Use --mark <name> --no-detect to force.")
-                raise SystemExit(0)
+                _no_visible_mark_exit(source)
             target = "gemini"  # forced (no-detect): fall back to the default mark
         else:
             target = best.key
@@ -464,8 +502,8 @@ def cmd_visible(
     chosen = registry.get_mark(target)
     det = chosen.detect(image)
     if detect and not det.detected:
-        console.print(f"  Warning: {chosen.label} not detected  (conf {det.confidence:.2f}). Use --no-detect to force.")
-        raise SystemExit(0)
+        console.print(f"  {chosen.label} not detected  (conf {det.confidence:.2f}). Use --no-detect to force.")
+        _no_visible_mark_exit(source)
     if det.detected:
         console.print(f"  {chosen.label} detected  ({chosen.location}, conf {det.confidence:.2f})")
 

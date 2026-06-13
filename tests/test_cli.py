@@ -125,6 +125,32 @@ class TestVisibleCommand:
         assert "visible AI watermark" in result.output
         assert "--mark" in result.output
 
+    def test_visible_auto_no_mark_exits_two_with_eraser_hint(self, runner, sample_png, tmp_path):
+        # No known visible mark and no AI provenance signal: the command must not
+        # re-serve the input as a finished result. It exits EXIT_NO_VISIBLE_MARK
+        # (2) -- distinct from success (0) and a hard error (1) -- writes no
+        # output file, and points the user at the region eraser.
+        output = tmp_path / "clean.png"
+        result = runner.invoke(main, ["visible", str(sample_png), "-o", str(output)])
+        assert result.exit_code == 2, result.output
+        assert not output.exists()
+        assert "erase" in result.output
+
+    def test_visible_auto_no_mark_routes_to_all_when_metadata(self, runner, tmp_path):
+        # An image whose only signal is an invisible/metadata watermark (here SD
+        # generation parameters) has no visible mark to remove; the command must
+        # exit 2 and upsell the full 'all' pipeline rather than the eraser.
+        img = Image.fromarray(np.random.default_rng(0).integers(0, 255, (200, 200, 3), dtype=np.uint8))
+        pnginfo = PngInfo()
+        pnginfo.add_text("parameters", "Steps: 20, Sampler: Euler, a test landscape")
+        src = tmp_path / "ai.png"
+        img.save(src, pnginfo=pnginfo)
+        output = tmp_path / "clean.png"
+        result = runner.invoke(main, ["visible", str(src), "-o", str(output)])
+        assert result.exit_code == 2, result.output
+        assert not output.exists()
+        assert "all" in result.output
+
     def test_visible_basic(self, runner, sample_png, tmp_path):
         output = tmp_path / "clean.png"
         result = runner.invoke(

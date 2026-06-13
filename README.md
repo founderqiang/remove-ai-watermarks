@@ -333,6 +333,9 @@ remove-ai-watermarks identify image.png
 # strongest known mark (Gemini sparkle / Doubao "豆包AI生成" / Jimeng "即梦AI" /
 # Samsung Galaxy AI "Contenuti generati dall'AI"); force one with
 # --mark gemini / doubao / jimeng / samsung. Removed by reverse-alpha (true-pixel recovery).
+# If no known visible mark is found, it writes no output and exits 2 (not 0),
+# pointing you to `all` (for an invisible/metadata mark) or `erase` (for an
+# arbitrary logo) instead of handing back the unchanged image.
 remove-ai-watermarks visible image.png -o clean.png
 
 # Erase arbitrary region(s) — universal, any logo/watermark/object, any position.
