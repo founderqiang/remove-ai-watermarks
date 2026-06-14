@@ -37,12 +37,22 @@ CONTROLNET_CANNY_MODEL = "xinsir/controlnet-canny-sdxl-1.0"
 # applies to BOTH pipelines (`sdxl` plain img2img and `controlnet`) -- see "why one
 # ladder" below.
 #
-# Data basis (see docs/synthid.md sections 2.2 / 5.5): the values are the ORACLE-
-# CERTIFIED controlnet floors (2026-06-04, isolated Modal cert app, each vendor on its
-# own verifier): OpenAI 0.20 (2 photoreal x 3 seeds = 6/6 clean, resolution-independent),
-# Google 0.30 (clean on 2/2 seeds, validated ONLY at <= 1536 -- Gemini is resolution-
-# sensitive, native ~2816 likely needs ~0.35+). Unknown vendor gets the Google (more
-# robust watermark) value: safe-by-default.
+# Data basis (see docs/synthid.md sections 2.2 / 5.5): ORACLE-CERTIFIED controlnet floors.
+# A 2026-06-14 re-test on the deployed Modal worker (the production controlnet pipeline)
+# LOWERED the ladder back to OpenAI 0.10 / Google 0.15: each output verified on its own
+# oracle (openai.com/verify for OpenAI, the Google Gemini app for Google), all clean ->
+#   - OpenAI 0.10: 2 photoreal images (1402 / 1448 px), SynthID not found on either.
+#   - Google 0.15: 2 NATIVE-resolution images (both 2816x1536), SynthID not found on
+#     either -- this directly retires the earlier "native ~2816 likely needs ~0.35+"
+#     guess, which was speculative and never oracle-checked at that resolution.
+# This supersedes the 2026-06-04 cert (OpenAI 0.20 / Google 0.30), whose higher floor a
+# pixel-fidelity sweep showed was ~2x the removal floor and over-regenerated for no
+# efficacy gain (Google MAE -20% at 0.15 vs 0.30, no SynthID returning). Unknown vendor
+# tracks the Google (more robust watermark) value -> 0.15, still safe-by-default and the
+# floor that real (no-vendor) photos hit, so it also minimizes damage when there is in
+# fact nothing to remove. CAVEAT: the re-test is n=2 per vendor on photoreal / landscape
+# content; FLAT-GRAPHIC hard cases (the historical `sdxl` weak spot) were NOT in the
+# sample, so if an oracle still reads SynthID on a flat output, raise `--strength`.
 #
 # Why ONE ladder for both pipelines (2026-06-09): the certification was run on
 # controlnet, and it does NOT transfer to `sdxl` by symmetry -- the two pipelines have
@@ -57,9 +67,9 @@ CONTROLNET_CANNY_MODEL = "xinsir/controlnet-canny-sdxl-1.0"
 # this is a MARGIN argument for `sdxl`, not a fresh certification -- there is no local
 # SynthID detector, so if an oracle still reads SynthID on a flat `sdxl` output, raise
 # `--strength`.
-OPENAI_STRENGTH = 0.20
-GEMINI_STRENGTH = 0.30
-UNKNOWN_STRENGTH = 0.30
+OPENAI_STRENGTH = 0.10
+GEMINI_STRENGTH = 0.15
+UNKNOWN_STRENGTH = 0.15
 # Backwards-compatible alias: the vendor-unknown value (what a caller gets without a
 # detected vendor). Kept as DEFAULT_STRENGTH for existing references.
 DEFAULT_STRENGTH = UNKNOWN_STRENGTH

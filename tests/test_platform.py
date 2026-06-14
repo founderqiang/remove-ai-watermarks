@@ -140,11 +140,12 @@ class TestResolveStrength:
         assert resolve_strength(None, "adobe") == UNKNOWN_STRENGTH
 
     def test_ladder_is_the_certified_controlnet_floors(self):
-        # The unified ladder == the oracle-certified controlnet floors (OpenAI 0.20,
-        # Google/unknown 0.30); Google is the more-robust watermark, so it is higher.
-        assert OPENAI_STRENGTH == 0.20
-        assert GEMINI_STRENGTH == 0.30
-        assert UNKNOWN_STRENGTH == 0.30
+        # The unified ladder == the oracle-certified controlnet floors. Lowered on the
+        # 2026-06-14 Modal re-test (OpenAI 0.10, Google/unknown 0.15); Google is the
+        # more-robust watermark, so it is higher.
+        assert OPENAI_STRENGTH == 0.10
+        assert GEMINI_STRENGTH == 0.15
+        assert UNKNOWN_STRENGTH == 0.15
         assert OPENAI_STRENGTH < GEMINI_STRENGTH
 
     def test_default_strength_alias_is_unknown_vendor_value(self):

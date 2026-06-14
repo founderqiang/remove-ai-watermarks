@@ -453,9 +453,18 @@ study (section 2.2) gives empirical floors:
 
 The default is **vendor-adaptive** (`watermark_profiles.resolve_strength` +
 `vendor_for_strength`): the tool reads the C2PA issuer on the original input and picks
-`OPENAI_STRENGTH` 0.20 / `GEMINI_STRENGTH` 0.30 / `UNKNOWN_STRENGTH` 0.30. **The SAME
-ladder applies to both pipelines** (`sdxl` and `controlnet`) -- these are the
-oracle-certified controlnet floors (§5.5, the 2026-06-04 Modal cert). Why one ladder
+`OPENAI_STRENGTH` 0.10 / `GEMINI_STRENGTH` 0.15 / `UNKNOWN_STRENGTH` 0.15 **(LOWERED
+2026-06-14 from the 2026-06-04 cert floors 0.20/0.30/0.30)**. **The SAME ladder applies
+to both pipelines** (`sdxl` and `controlnet`). The 2026-06-14 re-test on the deployed
+Modal controlnet worker (v0.10.0) cleared SynthID on the oracle at OpenAI 0.10 (2
+photoreal) and Google 0.15 (2 NATIVE 2816x1536, contradicting the "native >= 0.30" guess
+on line above), and a pixel sweep showed 0.20/0.30 over-regenerated for no efficacy gain.
+**This re-opens a genuine tension with the 2026-06-04 pass, which found photoreal STILL
+detected after controlnet at 0.10/0.15 (lines above):** either the v0.10.0 controlnet
+default improved the floor, or n=2 landed on the lucky side of the seed-non-determinism
+(§5.5). So a SERVICE on this ladder MUST pin a fixed, oracle-verified seed (not random),
+and flat-graphic hard cases (NOT in the n=2 re-test) still need a per-content oracle
+recheck -- raise `--strength` there. The prior cert floors are the §5.5 record. Why one ladder
 covers plain `sdxl` too: the certification was run on controlnet and does NOT transfer
 by symmetry (the two pipelines have OPPOSITE hard cases -- controlnet leaves SynthID on
 photoreal, `sdxl` on flat graphics, the §5.1 content-x-pipeline table), BUT on its own
