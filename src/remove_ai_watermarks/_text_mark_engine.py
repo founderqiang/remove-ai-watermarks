@@ -184,20 +184,27 @@ class TextMarkEngine:
     # ── Mask ────────────────────────────────────────────────────────────
 
     def extract_mask(self, image: NDArray[Any], loc: TextMarkLocation) -> NDArray[Any]:
-        """Build a full-image uint8 mask (255 = watermark glyph) for the box.
+        """Build a box-sized uint8 mask (255 = watermark glyph) for ``loc``.
+
+        Returns just the glyph mask of the located box (shape ``(loc.h, loc.w)``),
+        not a full-frame array: every caller immediately crops to ``loc.bbox``, so
+        allocating a full ``(h, w)`` mask and embedding the box was O(image) work
+        and memory for an O(box) result -- a wasted full-frame uint8 allocation on
+        each detect (~12 MB on a 12 MP frame, recomputed per text-mark detector on
+        the memory-tight identify path). The box mask is byte-identical to the old
+        full-frame mask cropped to ``loc.bbox``.
 
         Polarity-aware: the mark is a light, low-saturation gray rendered brighter
         than the local background (white top-hat), so a white-paper document is left
         untouched (nothing brighter than its surroundings is masked there).
         """
         c = self.config
-        h, w = image.shape[:2]
         x, y, bw, bh = loc.bbox
         # A degenerate ROI (a sliver from an extremely wide/short image) cannot hold
         # the mark and would feed cv2's GaussianBlur/morphology a ~1-px-tall array,
         # which can fault native code on some platforms. Skip the cv2 pipeline.
         if bh < 16 or bw < 16:
-            return np.zeros((h, w), np.uint8)
+            return np.zeros((bh, bw), np.uint8)
         # Normalize the ROI to 3-channel BGR (grayscale / BGRA would break axis=2).
         roi = image_io.to_bgr(image[y : y + bh, x : x + bw]).astype(np.float32)
 
@@ -216,11 +223,7 @@ class TextMarkEngine:
         glyph = cand.astype(np.uint8) * 255
         glyph = cv2.morphologyEx(glyph, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
         k = c.morph_open_size
-        glyph = cv2.morphologyEx(glyph, cv2.MORPH_OPEN, np.ones((k, k), np.uint8))
-
-        mask = np.zeros((h, w), np.uint8)
-        mask[y : y + bh, x : x + bw] = glyph
-        return mask
+        return cv2.morphologyEx(glyph, cv2.MORPH_OPEN, np.ones((k, k), np.uint8))
 
     # ── Detect ──────────────────────────────────────────────────────────
 
@@ -232,9 +235,8 @@ class TextMarkEngine:
         if image is None or image.size == 0:
             return det
         loc = self.locate(image)
-        mask = self.extract_mask(image, loc)
-        x, y, bw, bh = loc.bbox
-        box = mask[y : y + bh, x : x + bw]
+        box = self.extract_mask(image, loc)  # box-sized mask (== old full-frame cropped to bbox)
+        _x, _y, bw, bh = loc.bbox
         coverage = float((box > 0).sum()) / float(max(1, bw * bh))
         det.region = loc.bbox
         det.coverage = coverage
@@ -254,7 +256,15 @@ class TextMarkEngine:
 
     def _fixed_alpha_map(self, image: NDArray[Any]) -> tuple[NDArray[Any], tuple[int, int, int, int]] | None:
         """Place the template by fixed width-relative geometry (pixel-exact at the
-        captured width)."""
+        captured width).
+
+        Returns the glyph-sized alpha BLOCK (shape ``(gh, gw)``) plus its placement
+        ``(ax, ay, gw, gh)``, not a full-frame ``(h, w)`` map. The map is non-zero
+        only inside the glyph box and every consumer reads exactly that box, so a
+        full-frame float32 map was O(image*4 bytes) of mostly zeros -- ~48 MB on a
+        12 MP frame, and two were held at once (fixed + aligned). The block is
+        byte-identical to the old full-frame map's ``[ay:ay+gh, ax:ax+gw]`` slice.
+        """
         c = self.config
         at = self._alpha_template()
         if at is None:
@@ -268,22 +278,23 @@ class TextMarkEngine:
         else:  # bottom-left
             ax = min(max(0, int(c.alpha_margin_x_frac * w)), max(0, w - gw))
         ay = max(0, h - int(c.alpha_margin_bottom_frac * w) - gh)
-        amap = np.zeros((h, w), np.float32)
-        amap[ay : ay + gh, ax : ax + gw] = cv2.resize(at, (gw, gh), interpolation=cv2.INTER_LINEAR)
-        return amap, (ax, ay, gw, gh)
+        block = cv2.resize(at, (gw, gh), interpolation=cv2.INTER_LINEAR)
+        return block, (ax, ay, gw, gh)
 
     def _aligned_alpha_map(self, image: NDArray[Any]) -> tuple[NDArray[Any], tuple[int, int, int, int]] | None:
         """Register the captured template to the actual mark via a TM_CCOEFF_NORMED
-        scale + position search. Returns ``(alpha_map, glyph_bbox)`` or None."""
+        scale + position search. Returns the glyph-sized alpha BLOCK and its
+        placement ``(ax, ay, gw, gh)`` (see :meth:`_fixed_alpha_map` for why the
+        block, not a full-frame map), or None."""
         c = self.config
         at = self._alpha_template()
         sil = self._glyph_silhouette()
         if at is None or sil is None:
             return None
-        h, w = image.shape[:2]
+        w = image.shape[1]
         loc = self.locate(image)
         bx, by, bw, bh = loc.bbox
-        box_mask = self.extract_mask(image, loc)[by : by + bh, bx : bx + bw]
+        box_mask = self.extract_mask(image, loc)  # box-sized (== old full-frame cropped to bbox)
         expected = c.alpha_width_frac * w
         best: tuple[float, int, int, int, int] | None = None
         for scale in np.linspace(*c.alpha_align_search):
@@ -298,18 +309,17 @@ class TextMarkEngine:
             return None
         _, gw, gh, ox, oy = best
         ax, ay = bx + ox, by + oy
-        amap = np.zeros((h, w), np.float32)
-        amap[ay : ay + gh, ax : ax + gw] = cv2.resize(at, (gw, gh), interpolation=cv2.INTER_LINEAR)
-        return amap, (ax, ay, gw, gh)
+        block = cv2.resize(at, (gw, gh), interpolation=cv2.INTER_LINEAR)
+        return block, (ax, ay, gw, gh)
 
     def _apply_reverse_alpha(
         self, image: NDArray[Any], amap: NDArray[Any], region: tuple[int, int, int, int]
     ) -> NDArray[Any]:
         """Invert the alpha blend with ``amap``: ``original = (wm - a*logo)/(1-a)``.
 
-        ``amap`` is zero everywhere except the glyph ``region`` (x, y, w, h), so the
-        blend is a no-op (``(wm - 0)/(1 - 0) == wm``) outside it. Compute the math on
-        the glyph crop only and copy the rest through unchanged -- byte-identical to a
+        ``amap`` is the glyph-sized alpha BLOCK for ``region`` (x, y, w, h); outside
+        it the blend is a no-op (``(wm - 0)/(1 - 0) == wm``). Compute the math on the
+        glyph crop only and copy the rest through unchanged -- byte-identical to a
         full-frame pass (a uint8 round-trip through float32 is exact), but O(glyph)
         instead of O(image): a full-frame pass costs ~275 ms on a 12 MP frame for a
         glyph that is <0.1% of it, and it runs once per candidate placement.
@@ -319,7 +329,7 @@ class TextMarkEngine:
         x2, y2 = x1 + gw, y1 + gh
         if y1 >= y2 or x1 >= x2:
             return out
-        a3 = np.clip(amap[y1:y2, x1:x2], 0.0, 1.0)[:, :, None]
+        a3 = np.clip(amap, 0.0, 1.0)[:, :, None]
         logo = np.array(self.config.alpha_logo_bgr, np.float32)
         roi = out[y1:y2, x1:x2].astype(np.float32)
         out[y1:y2, x1:x2] = np.clip((roi - a3 * logo) / np.clip(1.0 - a3, 0.25, 1.0), 0, 255).astype(np.uint8)
@@ -351,16 +361,25 @@ class TextMarkEngine:
             return image.copy()
         best_out: NDArray[Any] | None = None
         best_amap: NDArray[Any] | None = None
+        best_region: tuple[int, int, int, int] | None = None
         best_residual = float("inf")
         for amap, region in maps:
             out = self._apply_reverse_alpha(image, amap, region)
             residual = self.detect(out).confidence
             if residual < best_residual:
-                best_residual, best_out, best_amap = residual, out, amap
-        if best_out is None or best_amap is None:  # pragma: no cover - maps is non-empty
+                best_residual, best_out, best_amap, best_region = residual, out, amap, region
+        if best_out is None or best_amap is None or best_region is None:  # pragma: no cover - maps is non-empty
             return image.copy()
         if residual_inpaint:
+            # Embed the glyph-sized alpha block into a full-frame uint8 mask only for
+            # the inpaint (cv2.inpaint needs a mask matching best_out). One uint8
+            # full-frame array, built once, vs the old two full-frame float32 maps;
+            # byte-identical to thresholding the old full-frame float32 map (zero
+            # outside the block, so the dilate/inpaint see the same mask).
+            ax, ay, gw, gh = best_region
+            rm = np.zeros(best_out.shape[:2], np.uint8)
+            rm[ay : ay + gh, ax : ax + gw] = (best_amap > c.residual_alpha_floor).astype(np.uint8) * 255
             kernel = np.ones((c.residual_dilate, c.residual_dilate), np.uint8)
-            rm = cv2.dilate((best_amap > c.residual_alpha_floor).astype(np.uint8) * 255, kernel)
+            rm = cv2.dilate(rm, kernel)
             best_out = cv2.inpaint(best_out, rm, c.residual_inpaint_radius, cv2.INPAINT_NS)
         return best_out
