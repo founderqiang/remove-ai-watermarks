@@ -182,6 +182,14 @@ class TestC2PARealSamples:
         assert has_c2pa_metadata(out)
         assert "OpenAI" in extract_c2pa_info(out)["issuer"]
 
+    def test_extract_info_flux_jpeg_via_reader(self):
+        """Real committed JPEG-with-C2PA fixture: the non-PNG reader path works."""
+        info = extract_c2pa_info(SAMPLES_DIR / "flux-1.jpg")
+        assert info["has_c2pa"] is True
+        assert info["c2pa_manifest"].startswith("C2PA manifest store")  # reader, not chunk
+        assert "Black Forest Labs" in info["issuer"]
+        assert "trainedAlgorithmicMedia" in info["source_type"]
+
     def test_extract_info_uses_reader_store(self):
         """The c2pa-python reader path: structured (not heuristic) extraction."""
         from remove_ai_watermarks.noai import c2pa

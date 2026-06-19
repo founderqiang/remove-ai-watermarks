@@ -229,6 +229,19 @@ class TestIdentifyRealSamples:
         assert r.is_ai_generated is True
         assert any("IPTC" in w for w in r.watermarks)
 
+    def test_flux_bfl_c2pa_png(self):
+        # flux-1.png: real Black Forest Labs FLUX.2 Playground output (signed C2PA).
+        r = identify(SAMPLES_DIR / "flux-1.png", check_visible=False)
+        assert r.is_ai_generated is True
+        assert r.platform == "Black Forest Labs (FLUX)"
+
+    def test_flux_bfl_c2pa_jpeg_via_reader(self):
+        # flux-1.jpg: same source as a JPEG -- the real committed JPEG-with-C2PA
+        # fixture that exercises the c2pa-python non-PNG reader path end to end.
+        r = identify(SAMPLES_DIR / "flux-1.jpg", check_visible=False)
+        assert r.is_ai_generated is True
+        assert r.platform == "Black Forest Labs (FLUX)"
+
     def test_clean_photo_is_unknown_not_clean(self, clean_photo: Path):
         r = identify(clean_photo, check_visible=False)
         assert r.is_ai_generated is None  # never asserted False
