@@ -566,6 +566,8 @@ class WatermarkRemover:
         tile: bool = False,
         tile_size: int = 1024,
         tile_overlap: int = 128,
+        region: tuple[int, int, int, int] | None = None,
+        region_feather: int = 64,
     ) -> Path:
         """Remove watermark from an image using regeneration attack.
 
@@ -589,6 +591,15 @@ class WatermarkRemover:
             tile_size: Tile dimension in px (default 1024, SDXL's training size).
             tile_overlap: Overlap between adjacent tiles in px (default 128), feather-
                 blended so there is no visible seam.
+            region: Restrict the regeneration to the AI-composited box ``(x, y, w, h)``
+                and feather-composite it back over the ORIGINAL pixels everywhere else.
+                For AI-ENHANCED composites (digitalSourceType
+                ``compositeWithTrainedAlgorithmicMedia``, surfaced as
+                ``identify.ProvenanceReport.ai_source_kind == "enhanced"``): the real
+                photo outside the box is preserved exactly, only the AI region is
+                scrubbed. The box is supplied by the caller (a C2PA composite manifest
+                does not carry a reliable machine-readable region). None -> whole frame.
+            region_feather: Seam taper in px for ``region`` compositing (default 64).
 
         Returns:
             Path to the cleaned image.
@@ -659,6 +670,22 @@ class WatermarkRemover:
             self._pipeline = None
             self._controlnet_pipeline = None
             cleaned_image = _generate()
+
+        # Region-targeted regeneration for AI-enhanced composites: keep the real photo
+        # outside the AI box pixel-exact, blend only the regenerated AI region back in.
+        if region is not None:
+            import numpy as np
+
+            from remove_ai_watermarks.noai.tiling import feather_region_composite
+
+            gen = cleaned_image.convert("RGB")
+            if gen.size != init_image.size:  # a downscaled/tiled pass can resize
+                gen = gen.resize(init_image.size)
+            cleaned_image = gen
+            base_rgb = np.asarray(init_image)  # original RGB, untouched outside the box
+            merged = feather_region_composite(base_rgb, np.asarray(gen), region, feather=region_feather)
+            cleaned_image = Image.fromarray(merged)
+            self._set_progress(f"Region-targeted regeneration: AI box {region}, real photo preserved")
 
         self._set_progress(f"Regeneration complete · Output: {w}x{h}px {cleaned_image.mode}")
 
@@ -877,12 +904,17 @@ def remove_watermark(
     model_id: str | None = None,
     device: str | None = None,
     hf_token: str | None = None,
+    region: tuple[int, int, int, int] | None = None,
 ) -> Path:
     """Convenience function to remove watermark from an image.
 
     ``strength=None`` lets the profile pick its vendor-adaptive default
     (0.20 OpenAI / 0.30 Google / 0.30 unknown, from the C2PA SynthID proxy on the
     input; same ladder for the controlnet and sdxl pipelines). Pass a value to override.
+
+    ``region=(x, y, w, h)`` restricts the regeneration to that box and preserves the
+    real photo elsewhere -- for AI-enhanced composites (see
+    ``WatermarkRemover.remove_watermark``).
     """
     from remove_ai_watermarks.noai.watermark_profiles import vendor_for_strength
 
@@ -892,4 +924,5 @@ def remove_watermark(
         output_path=output_path,
         strength=strength,
         vendor=vendor_for_strength(image_path),
+        region=region,
     )

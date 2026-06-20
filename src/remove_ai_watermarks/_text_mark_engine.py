@@ -37,6 +37,28 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Reverse-alpha over-subtraction guard (ported from gemini_engine, 2026-06-20).
+# The reverse-alpha blend ``(wm - a*logo)/(1-a)`` over-subtracts when the captured
+# alpha over-estimates THIS image's mark opacity: on a dark or mid-tone background
+# it drives the glyph footprint into a visibly DARKER-than-background ghost (a
+# "dark pit") instead of recovering the true pixels. The retained-corpus mining
+# (2026-06-20) showed the sparkle-only fix (commit 41f6797) left this unhandled
+# for the Doubao/Jimeng text marks. Mirror the sparkle gate: when the recovered
+# glyph body lands more than this many gray levels below the local background
+# ring, abandon the reverse-alpha output for the footprint and inpaint it from
+# the surroundings instead. Calibrated to the same 25-level margin the sparkle
+# gate uses -- clean text-mark removals recover within ~10 of the ring, the dark
+# pit lands tens of levels below.
+_OVERSUB_DARK_MARGIN = 25.0
+# Glyph-body / background-ring sampling for the guard. The ring is a pad around
+# the glyph box (excluding the box); the body is the bright-core glyph pixels.
+_OVERSUB_RING_PAD_FRAC = 0.6  # ring pad as a fraction of the glyph-box height
+_OVERSUB_BODY_ALPHA_FLOOR = 0.15  # alpha above which a block pixel counts as glyph body
+# Footprint inpaint when the guard trips: dilate the glyph mask wider than the
+# thin residual pass so the whole darkened ghost is reconstructed, not just its edge.
+_OVERSUB_INPAINT_DILATE = 9
+_OVERSUB_INPAINT_RADIUS = 4
+
 
 @dataclass(frozen=True)
 class TextMarkConfig:
@@ -335,6 +357,74 @@ class TextMarkEngine:
         out[y1:y2, x1:x2] = np.clip((roi - a3 * logo) / np.clip(1.0 - a3, 0.25, 1.0), 0, 255).astype(np.uint8)
         return out
 
+    def _reverse_alpha_oversubtracts(
+        self, image: NDArray[Any], amap: NDArray[Any], region: tuple[int, int, int, int]
+    ) -> bool:
+        """True when reverse-alpha would darken the glyph footprint into a dark pit.
+
+        Ported from ``gemini_engine._reverse_alpha_oversubtracts`` (2026-06-20):
+        PREDICT the reverse-alpha output at the bright glyph core directly from the
+        INPUT and the captured alpha, ``(core_obs - a*logo)/(1-a)``, and trip when it
+        lands more than ``_OVERSUB_DARK_MARGIN`` gray levels below the local
+        background ring. Predicting from the input (not the produced output) keeps the
+        gate independent of which placement the reverse-alpha picked, so a clean
+        full-strength mark (whose strokes predict back to the background) never trips,
+        while a mark fainter than the capture (over-subtracted into a ghost) does.
+        """
+        ax, ay, gw, gh = region
+        ih, iw = image.shape[:2]
+        if gw < 4 or gh < 4:
+            return False
+        if float(amap.max()) < 0.2:  # too faint a capture to over-subtract meaningfully
+            return False
+        body_box = amap >= _OVERSUB_BODY_ALPHA_FLOOR  # glyph strokes
+        if not bool(body_box.any()):
+            return False
+        pad = max(4, int(gh * _OVERSUB_RING_PAD_FRAC))
+        ry1, ry2 = max(0, ay - pad), min(ih, ay + gh + pad)
+        rx1, rx2 = max(0, ax - pad), min(iw, ax + gw + pad)
+        ring = image[ry1:ry2, rx1:rx2].astype(np.float32).mean(axis=2)
+        fy1, fy2, fx1, fx2 = ay - ry1, ay - ry1 + gh, ax - rx1, ax - rx1 + gw
+        ring_mask = np.ones(ring.shape, dtype=bool)
+        ring_mask[fy1:fy2, fx1:fx2] = False
+        if int(ring_mask.sum()) < 10:
+            return False
+        # Predict the reverse-alpha output PER PIXEL over the glyph body -- exactly
+        # the (obs - a*logo)/(1-a) math the remover applies -- so a cleanly captured
+        # mark predicts back to the true background everywhere (no trip), while a mark
+        # fainter than the capture predicts a body far below the local ring. The
+        # per-pixel alpha (not a single peak value) keeps the prediction faithful
+        # across the glyph's anti-aliased alpha gradient.
+        obs = ring[fy1:fy2, fx1:fx2]
+        a = np.clip(amap, 0.0, 0.99)
+        logo = float(np.mean(self.config.alpha_logo_bgr))
+        predicted = (obs - a * logo) / (1.0 - a)
+        predicted_core = float(np.median(predicted[body_box]))
+        bg = float(np.median(ring[ring_mask]))
+        oversub = predicted_core < bg - _OVERSUB_DARK_MARGIN
+        if oversub:
+            logger.debug(
+                "%s reverse-alpha over-subtracts: predicted core=%.1f bg=%.1f (margin %.0f) -> footprint inpaint",
+                self.config.name,
+                predicted_core,
+                bg,
+                _OVERSUB_DARK_MARGIN,
+            )
+        return oversub
+
+    def _inpaint_footprint(
+        self, image: NDArray[Any], amap: NDArray[Any], region: tuple[int, int, int, int]
+    ) -> NDArray[Any]:
+        """Reconstruct the glyph footprint from its surroundings (used when
+        reverse-alpha would over-subtract into a dark pit). Inpaints the ORIGINAL
+        image over a dilated glyph mask, so the result never contains the darkened
+        reverse-alpha pixels."""
+        ax, ay, gw, gh = region
+        mask = np.zeros(image.shape[:2], np.uint8)
+        mask[ay : ay + gh, ax : ax + gw] = (amap > self.config.residual_alpha_floor).astype(np.uint8) * 255
+        mask = cv2.dilate(mask, np.ones((_OVERSUB_INPAINT_DILATE, _OVERSUB_INPAINT_DILATE), np.uint8))
+        return cv2.inpaint(image, mask, _OVERSUB_INPAINT_RADIUS, cv2.INPAINT_NS)
+
     def remove_watermark_reverse_alpha(self, image: NDArray[Any], *, residual_inpaint: bool = True) -> NDArray[Any]:
         """Recover the original pixels by inverting the alpha blend, then clear the
         residual outline with a thin inpaint over the glyph footprint.
@@ -370,6 +460,13 @@ class TextMarkEngine:
                 best_residual, best_out, best_amap, best_region = residual, out, amap, region
         if best_out is None or best_amap is None or best_region is None:  # pragma: no cover - maps is non-empty
             return image.copy()
+        # Over-subtraction guard: on a dark/mid-tone background the captured alpha can
+        # over-estimate the mark's opacity and reverse-alpha leaves a darker-than-
+        # background ghost. When the recovered glyph body sits far below the local
+        # ring, reconstruct the footprint from its surroundings instead of shipping the
+        # dark pit (the thin residual inpaint cannot fix a footprint-wide darkening).
+        if self._reverse_alpha_oversubtracts(image, best_amap, best_region):
+            return self._inpaint_footprint(image, best_amap, best_region)
         if residual_inpaint:
             # Embed the glyph-sized alpha block into a full-frame uint8 mask only for
             # the inpaint (cv2.inpaint needs a mask matching best_out). One uint8
