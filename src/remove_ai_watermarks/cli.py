@@ -253,15 +253,16 @@ def _normalize_pipeline(ctx: click.Context, param: click.Parameter, value: str |
     return normalized
 
 
-# ``controlnet`` (the default-SELECTED value) and ``sdxl`` (plain SDXL img2img) are the
-# two current profiles; ``default`` is an OUTDATED back-compat alias for ``sdxl``
-# (warned + normalized away by _normalize_pipeline).
-_PIPELINE_CHOICES = ["sdxl", "controlnet", "default"]
+# ``controlnet`` (the default-SELECTED value), ``sdxl`` (plain SDXL img2img) and
+# ``qwen`` (Qwen-Image, CUDA/cloud-class) are the current profiles; ``default`` is an
+# OUTDATED back-compat alias for ``sdxl`` (warned + normalized away by _normalize_pipeline).
+_PIPELINE_CHOICES = ["sdxl", "controlnet", "qwen", "default"]
 _PIPELINE_HELP = (
     "Pipeline profile. controlnet (DEFAULT) = SDXL + canny ControlNet that preserves "
     "text/faces via edge conditioning while removing SynthID; sdxl = plain SDXL img2img "
-    "(lighter, no extra model download, but leaves SynthID on flat-graphic content). "
-    "('default' is an OUTDATED alias for 'sdxl' -- use sdxl or controlnet.)"
+    "(lighter, no extra model download, but leaves SynthID on flat-graphic content); "
+    "qwen = Qwen-Image (20B, Apache-2.0) img2img, best text/structure preservation but "
+    "CUDA/cloud-class (does not fit MPS). ('default' is an OUTDATED alias for 'sdxl'.)"
 )
 
 # Shared --pipeline / --strength decorators so the three diffusion commands

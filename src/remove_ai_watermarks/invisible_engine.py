@@ -103,8 +103,9 @@ class InvisibleEngine:
             device: Device for inference (auto/cpu/mps/cuda/xpu). None = auto.
             pipeline: Pipeline profile. "controlnet" (DEFAULT; SDXL + canny ControlNet
                 that preserves text/face structure via edge conditioning while removing
-                SynthID) or "sdxl" (plain SDXL img2img, lighter but leaves SynthID on
-                flat-graphic content). "default" is a back-compat alias for "sdxl".
+                SynthID), "sdxl" (plain SDXL img2img, lighter but leaves SynthID on
+                flat-graphic content), or "qwen" (Qwen-Image 20B img2img, best text/
+                structure preservation but CUDA/cloud-class). "default" aliases "sdxl".
             hf_token: HuggingFace API token.
             progress_callback: Optional callback for progress messages.
             controlnet_conditioning_scale: ControlNet structure-preservation

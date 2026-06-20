@@ -1,6 +1,14 @@
 """Watermark removal using diffusion model regeneration attack.
 
-Two pipelines:
+Three pipelines (selected by the explicit ``pipeline`` ctor arg):
+
+0. ``qwen`` -- Qwen-Image (20B MMDiT, Apache-2.0) img2img. The scrub still comes from
+   the img2img ``strength``; Qwen preserves text (incl. CJK) and structure markedly
+   better than SDXL at the scrub floor, so it over-regenerates real photos far less.
+   CUDA/cloud-class (does not fit MPS). See ``watermark_profiles`` for the prototype
+   oracle floors (pending seed-repeat cert).
+
+Two SDXL pipelines:
 1. ``controlnet`` (DEFAULT) -- SDXL img2img with a canny ControlNet. The watermark
    REMOVAL still comes from the img2img regeneration (``strength``); the ControlNet
    only PRESERVES structure (text/faces) by conditioning on the edge map. No original
@@ -36,6 +44,7 @@ from remove_ai_watermarks.noai.watermark_profiles import (
     CONTROLNET_CANNY_MODEL,
     DEFAULT_MODEL_ID,
     DEFAULT_STRENGTH,
+    QWEN_MODEL_ID,
     normalize_profile,
     resolve_strength,
 )
@@ -308,6 +317,29 @@ _CANNY_HIGH = 200
 _CONTROLNET_PROMPT = "best quality, high quality, sharp, detailed, photographic"
 _CONTROLNET_NEGATIVE = "blurry, lowres, deformed, distorted text, garbled text, watermark, jpeg artifacts"
 
+# Neutral prompts for the Qwen-Image img2img pass (faithful regeneration, not an edit).
+_QWEN_PROMPT = "high quality, sharp, detailed, faithful to the original"
+_QWEN_NEGATIVE = "blurry, lowres, distorted text, garbled text, artifacts"
+
+
+def _build_qwen_kwargs(
+    image: Image.Image, strength: float, num_inference_steps: int, true_cfg_scale: float, generator: Any
+) -> dict[str, Any]:
+    """Build the QwenImageImg2ImgPipeline call kwargs (pure; unit-tested without torch).
+
+    Qwen-Image uses ``true_cfg_scale`` (not SDXL's ``guidance_scale``) and takes an
+    explicit ``negative_prompt``; the scrub still comes from the img2img ``strength``.
+    """
+    return {
+        "prompt": _QWEN_PROMPT,
+        "negative_prompt": _QWEN_NEGATIVE,
+        "image": image,
+        "strength": strength,
+        "num_inference_steps": num_inference_steps,
+        "true_cfg_scale": true_cfg_scale,
+        "generator": generator,
+    }
+
 
 class WatermarkRemover:
     """Remove watermarks from images using diffusion model regeneration.
@@ -348,6 +380,11 @@ class WatermarkRemover:
         if torch_dtype is None:
             if self.device == "cpu" or self.device == "mps":
                 self.torch_dtype = torch.float32  # type: ignore
+            elif self.model_profile == "qwen":
+                # Qwen-Image is published in bf16; fp16 risks overflow on the 20B MMDiT.
+                # cuda/xpu-only by construction: the cpu/mps guard above already forced
+                # fp32, and the 20B model does not fit MPS anyway.
+                self.torch_dtype = torch.bfloat16  # type: ignore
             else:
                 self.torch_dtype = torch.float16  # type: ignore
         else:
@@ -355,6 +392,7 @@ class WatermarkRemover:
 
         self._pipeline: AutoImg2ImgPipeline | None = None
         self._controlnet_pipeline: Any = None
+        self._qwen_pipeline: Any = None
         self._progress_callback = progress_callback
         self.hf_token: str | None = hf_token or os.environ.get("HF_TOKEN")
 
@@ -369,7 +407,9 @@ class WatermarkRemover:
 
     def preload(self) -> None:
         """Eagerly load the pipeline so download progress bars are visible."""
-        if self.model_profile == "controlnet":
+        if self.model_profile == "qwen":
+            self._load_qwen_pipeline()
+        elif self.model_profile == "controlnet":
             self._load_controlnet_pipeline()
         else:
             self._load_pipeline()
@@ -420,19 +460,27 @@ class WatermarkRemover:
 
         return pipeline
 
+    def _base_load_kwargs(self) -> dict[str, Any]:
+        """The ``from_pretrained`` kwargs shared by all three loaders (dtype + token).
+
+        Each loader adds its own extras (SDXL safety_checker + fp16 VAE, the ControlNet
+        model, etc.). Centralizing the dtype/token pair avoids the drift trap of three
+        copies (a token forgotten on one loader silently breaks gated downloads there).
+        """
+        load_kwargs: dict[str, Any] = {"torch_dtype": self.torch_dtype}
+        if self.hf_token:
+            load_kwargs["token"] = self.hf_token
+        return load_kwargs
+
     def _load_pipeline(self) -> AutoImg2ImgPipeline:
         """Load the plain SDXL img2img pipeline lazily."""
         if self._pipeline is None:
             logger.info("Loading model %s on %s...", self.model_id, self.device)
             self._set_progress(f"Loading model weights: {self.model_id}")
 
-            load_kwargs: dict[str, Any] = {
-                "torch_dtype": self.torch_dtype,
-                "safety_checker": None,
-                "requires_safety_checker": False,
-            }
-            if self.hf_token:
-                load_kwargs["token"] = self.hf_token
+            load_kwargs = self._base_load_kwargs()
+            load_kwargs["safety_checker"] = None
+            load_kwargs["requires_safety_checker"] = False
             self._maybe_add_fp16_vae(load_kwargs)
 
             pipeline = AutoImg2ImgPipeline.from_pretrained(self.model_id, **load_kwargs)  # type: ignore
@@ -458,9 +506,8 @@ class WatermarkRemover:
             self._set_progress(f"Loading ControlNet: {CONTROLNET_CANNY_MODEL}")
             controlnet = ControlNetModel.from_pretrained(CONTROLNET_CANNY_MODEL, torch_dtype=self.torch_dtype)
 
-            load_kwargs: dict[str, Any] = {"controlnet": controlnet, "torch_dtype": self.torch_dtype}
-            if self.hf_token:
-                load_kwargs["token"] = self.hf_token
+            load_kwargs = self._base_load_kwargs()
+            load_kwargs["controlnet"] = controlnet
             self._maybe_add_fp16_vae(load_kwargs)
 
             self._set_progress(f"Loading model weights: {self.model_id}")
@@ -473,6 +520,37 @@ class WatermarkRemover:
             self._controlnet_pipeline = pipeline
 
         return self._controlnet_pipeline
+
+    def _load_qwen_pipeline(self) -> Any:
+        """Load the Qwen-Image img2img pipeline lazily.
+
+        Qwen-Image is its OWN base model (not an SDXL add-on), so it loads
+        ``QWEN_MODEL_ID`` unless the caller passed a custom ``--model``. Needs a
+        diffusers build that ships ``QwenImageImg2ImgPipeline``; raises a clear error
+        otherwise. CUDA/cloud-class (the 20B MMDiT does not fit MPS).
+        """
+        if self._qwen_pipeline is None:
+            try:
+                from diffusers import QwenImageImg2ImgPipeline
+            except ImportError as exc:
+                raise ImportError(
+                    "The 'qwen' pipeline needs a diffusers version that ships "
+                    "QwenImageImg2ImgPipeline. Upgrade: pip install -U diffusers"
+                ) from exc
+
+            # Use the Qwen base unless the user explicitly overrode --model.
+            model = self.model_id if self.model_id != self.DEFAULT_MODEL_ID else QWEN_MODEL_ID
+            logger.info("Loading Qwen-Image (%s) on %s...", model, self.device)
+            self._set_progress(f"Loading model weights: {model}")
+            pipeline = QwenImageImg2ImgPipeline.from_pretrained(model, **self._base_load_kwargs())
+            pipeline = self._move_to_device_and_optimize(pipeline)
+            with contextlib.suppress(Exception):
+                pipeline.set_progress_bar_config(disable=True)
+
+            logger.info("Qwen-Image model loaded successfully")
+            self._qwen_pipeline = pipeline
+
+        return self._qwen_pipeline
 
     # ── Core removal ─────────────────────────────────────────────────
 
@@ -552,6 +630,8 @@ class WatermarkRemover:
         _total_start = time.monotonic()
 
         def _generate_one(img: Image.Image) -> Image.Image:
+            if self.model_profile == "qwen":
+                return self._run_qwen(img, strength, num_inference_steps, guidance_scale, generator)
             if self.model_profile == "controlnet":
                 return self._run_controlnet(img, strength, num_inference_steps, guidance_scale, generator)
             return self._run_img2img(img, strength, num_inference_steps, guidance_scale, generator)
@@ -724,6 +804,30 @@ class WatermarkRemover:
         self.torch_dtype = torch.float32  # type: ignore[assignment]
         self._controlnet_pipeline = None
         return self._load_controlnet_pipeline()
+
+    # ── Qwen runner ──────────────────────────────────────────────────
+
+    def _run_qwen(
+        self,
+        init_image: Image.Image,
+        strength: float,
+        num_inference_steps: int,
+        guidance_scale: float,
+        generator: Any,
+    ) -> Image.Image:
+        """Run the Qwen-Image img2img pass.
+
+        Removal comes from the img2img ``strength`` (same lever as the SDXL paths);
+        Qwen-Image preserves text/structure markedly better at the scrub floor. The
+        CLI ``guidance_scale`` maps to Qwen's ``true_cfg_scale`` (~4.0 is typical;
+        the SDXL default of 7.5 is high for Qwen). No MPS->CPU fallback: the 20B MMDiT
+        is CUDA/cloud-class and does not run on MPS, so an error here propagates.
+        """
+        pipeline = self._load_qwen_pipeline()
+        self._set_progress(f"Running Qwen-Image img2img (strength={strength}, true_cfg={guidance_scale})...")
+        kwargs = _build_qwen_kwargs(init_image, strength, num_inference_steps, guidance_scale, generator)
+        result = pipeline(**kwargs)
+        return result.images[0]
 
     # ── Batch ────────────────────────────────────────────────────────
 

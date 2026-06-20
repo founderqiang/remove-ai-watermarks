@@ -115,6 +115,7 @@ class TestModelProfiles:
     def test_canonical_profiles_unchanged(self):
         assert normalize_profile("sdxl") == "sdxl"
         assert normalize_profile("controlnet") == "controlnet"
+        assert normalize_profile("qwen") == "qwen"
 
     def test_default_alias_resolves_to_sdxl(self):
         # "default" is the legacy alias for "sdxl" (back-compat for existing scripts).
@@ -123,6 +124,35 @@ class TestModelProfiles:
     def test_normalize_is_case_and_whitespace_insensitive(self):
         assert normalize_profile("  Default ") == "sdxl"
         assert normalize_profile("CONTROLNET") == "controlnet"
+
+
+class TestQwenKwargs:
+    """_build_qwen_kwargs is pure (no torch); guards the Qwen-Image call shape.
+
+    watermark_remover imports torch under a try/except, so the module (and this pure
+    helper) imports fine in the core+dev CI env where torch is absent.
+    """
+
+    def test_uses_true_cfg_not_guidance_scale(self):
+        from remove_ai_watermarks.noai.watermark_remover import _build_qwen_kwargs
+
+        gen = object()
+        kwargs = _build_qwen_kwargs("IMG", strength=0.3, num_inference_steps=40, true_cfg_scale=4.0, generator=gen)
+        # Qwen uses true_cfg_scale, NOT SDXL's guidance_scale.
+        assert kwargs["true_cfg_scale"] == 4.0
+        assert "guidance_scale" not in kwargs
+        # The scrub still comes from strength; image + generator pass through.
+        assert kwargs["strength"] == 0.3
+        assert kwargs["image"] == "IMG"
+        assert kwargs["generator"] is gen
+        # Faithful-regeneration prompt + an explicit negative prompt.
+        assert kwargs["prompt"]
+        assert kwargs["negative_prompt"]
+
+    def test_qwen_model_id_is_qwen_image(self):
+        from remove_ai_watermarks.noai.watermark_profiles import QWEN_MODEL_ID
+
+        assert QWEN_MODEL_ID == "Qwen/Qwen-Image"
 
 
 class TestResolveStrength:

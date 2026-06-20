@@ -12,6 +12,17 @@ if TYPE_CHECKING:
 
 DEFAULT_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
 
+# Qwen-Image (20B MMDiT, Apache-2.0 code AND weights) base for the ``qwen`` pipeline:
+# an img2img alternative to SDXL with native text rendering (incl. CJK). Loaded only
+# when ``--pipeline qwen`` is selected; CUDA/cloud-class (does not fit MPS). Prototype
+# oracle floors (single-seed, 2026-06-19, pending seed-repeat cert): OpenAI clears at
+# strength ~0.10, Google/Gemini at ~0.30 (0.20 still detected) -- the latter is HIGHER
+# than the certified controlnet Google floor (0.15), so pass an explicit ``--strength``
+# for Gemini content on this pipeline until a Qwen-specific ladder is certified.
+# (Dispatch uses the bare "qwen" literal, matching the sdxl/controlnet sites, so there
+# is no QWEN_PROFILE constant -- only the model id is referenced from code.)
+QWEN_MODEL_ID = "Qwen/Qwen-Image"
+
 # Canonical pipeline-profile names + the back-compat alias. The plain SDXL img2img
 # profile is ``sdxl``; ``default`` is kept as an accepted alias (it was the profile's
 # name before ``controlnet`` became the default-selected pipeline, 2026-06-09).
