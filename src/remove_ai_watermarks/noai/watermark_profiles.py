@@ -14,11 +14,13 @@ DEFAULT_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
 
 # Qwen-Image (20B MMDiT, Apache-2.0 code AND weights) base for the ``qwen`` pipeline:
 # an img2img alternative to SDXL with native text rendering (incl. CJK). Loaded only
-# when ``--pipeline qwen`` is selected; CUDA/cloud-class (does not fit MPS). Prototype
-# oracle floors (single-seed, 2026-06-19, pending seed-repeat cert): OpenAI clears at
-# strength ~0.10, Google/Gemini at ~0.30 (0.20 still detected) -- the latter is HIGHER
-# than the certified controlnet Google floor (0.15), so pass an explicit ``--strength``
-# for Gemini content on this pipeline until a Qwen-specific ladder is certified.
+# when ``--pipeline qwen`` is selected; CUDA/cloud-class (does not fit MPS). CERTIFIED
+# oracle floors (2026-06-20): OpenAI **0.10** (seed-robust -- clean on seeds 0-4) and
+# Google/Gemini **0.25** (seed 0 verified on 2 images; pin a seed in prod, the Gemini
+# oracle rate-limits volume seed-repeat). The Gemini floor (0.25) is HIGHER than the
+# certified controlnet Gemini floor (0.15), and ``resolve_strength`` is shared/
+# pipeline-independent, so pass an explicit ``--strength 0.25`` for Gemini content on
+# this pipeline until a Qwen-specific ladder is wired into ``resolve_strength``.
 # (Dispatch uses the bare "qwen" literal, matching the sdxl/controlnet sites, so there
 # is no QWEN_PROFILE constant -- only the model id is referenced from code.)
 QWEN_MODEL_ID = "Qwen/Qwen-Image"
