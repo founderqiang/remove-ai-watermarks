@@ -176,6 +176,19 @@ def _is_ai_key(key: str) -> bool:
     return any(kw in key_lower for kw in AI_KEYWORDS)
 
 
+def _is_ai_value(value: str) -> bool:
+    """True if a metadata VALUE carries a known AI-generator token.
+
+    Mirrors :func:`exif_generator`'s value match so removal stays in parity with
+    detection: NovelAI stamps a generic ``Title``/``Source`` text chunk (an
+    AI-shaped value under a non-AI key) that ``_is_ai_key`` alone would keep.
+    """
+    from remove_ai_watermarks.noai.constants import AI_GENERATOR_TOKENS
+
+    value_lower = value.lower()
+    return any(token in value_lower for token in AI_GENERATOR_TOKENS)
+
+
 # PNG ancillary chunks that can carry provenance metadata (XMP, EXIF, text).
 # Never IDAT -- that is the compressed pixel stream.
 _PNG_META_CHUNKS: frozenset[bytes] = frozenset({b"tEXt", b"iTXt", b"zTXt", b"eXIf", b"iCCP"})
@@ -579,12 +592,15 @@ def synthid_source(image_path: Path) -> str | None:
 
 def exif_generator(image_path: Path) -> str | None:
     """Return an AI-generator name from the EXIF ``Software`` / XMP ``CreatorTool``
-    field, if it matches a known generator (see ``AI_GENERATOR_TOKENS``), else None.
+    field (or a PNG text chunk), if it matches a known generator (see
+    ``AI_GENERATOR_TOKENS``), else None.
 
     Cross-format: EXIF is read via PIL + piexif for any container PIL can open
     (JPEG/WebP/AVIF/PNG); an XMP ``CreatorTool`` raw-byte scan additionally covers
-    HEIF/JPEG-XL that PIL can't open without plugins. Only AI tokens match, so
-    ordinary editors (plain "Adobe Photoshop", "GIMP") are not flagged.
+    HEIF/JPEG-XL that PIL can't open without plugins. PNG ``tEXt`` chunks are read
+    too -- NovelAI stamps its generator in ``Software``/``Source``/``Title`` text
+    chunks rather than EXIF. Only AI tokens match, so ordinary editors (plain
+    "Adobe Photoshop", "GIMP") are not flagged.
     """
     import re
 
@@ -592,13 +608,21 @@ def exif_generator(image_path: Path) -> str | None:
 
     candidates: list[str] = []
 
-    # EXIF Software / Artist / ImageDescription (0th IFD) via PIL exif bytes.
+    # EXIF Software / Artist / ImageDescription (0th IFD) via PIL exif bytes,
+    # plus PNG text chunks (NovelAI writes Software/Source/Title there, not EXIF).
     try:
         import piexif
         from PIL import Image
 
         with Image.open(image_path) as img:
-            exif_bytes = img.info.get("exif")
+            info = img.info
+            exif_bytes = info.get("exif")
+            # PNG tEXt/iTXt chunks land in img.info too (same idiom as the other
+            # PNG-text readers in this module); NovelAI stamps Software/Source/Title.
+            for key in ("Software", "Source", "Title", "Description"):
+                value = info.get(key)
+                if isinstance(value, str) and value:
+                    candidates.append(value)
         if exif_bytes:
             tags = piexif.load(exif_bytes).get("0th", {})
             # Make catches camera-style tags AI tools reuse (Ideogram writes
@@ -940,6 +964,11 @@ def remove_ai_metadata(
             if not isinstance(key, str):
                 continue
             if _is_ai_key(key):
+                continue
+            # Drop a generic text chunk whose VALUE names an AI generator (NovelAI
+            # writes its stamp into Title/Source under non-AI keys) -- keeps removal
+            # in parity with exif_generator's value-based detection.
+            if isinstance(value, str) and _is_ai_value(value):
                 continue
             if key == "exif":
                 with contextlib.suppress(Exception):

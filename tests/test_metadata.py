@@ -538,6 +538,56 @@ class TestExifGenerator:
         Image.new("RGB", (64, 64)).save(path, exif=exif)
         assert exif_generator(path) == "Midjourney"
 
+    def test_novelai_png_text_chunk_detected(self, tmp_path: Path):
+        # NovelAI (mined corpus) stamps its generator in PNG tEXt Software/Source/
+        # Title chunks, not EXIF -- the PNG-text path must catch it.
+        from PIL.PngImagePlugin import PngInfo
+
+        info = PngInfo()
+        info.add_text("Software", "NovelAI")
+        info.add_text("Source", "NovelAI Diffusion V4.5 C02D4F98")
+        info.add_text("Title", "NovelAI generated image")
+        path = tmp_path / "novelai.png"
+        Image.new("RGB", (64, 64)).save(path, pnginfo=info)
+        assert exif_generator(path) == "NovelAI"
+
+    def test_reve_software_detected(self, tmp_path: Path):
+        # Reve Image (mined corpus) writes EXIF Software="reve.com".
+        path = _img_with_software(tmp_path, "jpg", "reve.com")
+        assert exif_generator(path) == "reve.com"
+
+    def test_reve_token_not_overmatched(self, tmp_path: Path):
+        # The "reve.com" token must not fire on incidental words like "forever".
+        path = _img_with_software(tmp_path, "jpg", "Forever Editor 2.0")
+        assert exif_generator(path) is None
+
+    def test_aphrodite_make_detected(self, tmp_path: Path):
+        # Aphrodite AI (mined corpus) writes EXIF Make="Aphrodite AI".
+        exif = piexif.dump({"0th": {piexif.ImageIFD.Make: b"Aphrodite AI"}, "Exif": {}, "GPS": {}, "1st": {}})
+        path = tmp_path / "aphrodite.jpg"
+        Image.new("RGB", (64, 64)).save(path, exif=exif)
+        assert exif_generator(path) == "Aphrodite AI"
+
+    def test_novelai_removal_parity(self, tmp_path: Path):
+        # Detection and removal must stay in parity: NovelAI stamps Title/Source
+        # under non-AI keys (AI-shaped VALUE), so removal must drop them by value,
+        # not only by key -- else the cleaned file still reads as NovelAI.
+        from PIL.PngImagePlugin import PngInfo
+
+        from remove_ai_watermarks.metadata import remove_ai_metadata
+
+        info = PngInfo()
+        info.add_text("Software", "NovelAI")
+        info.add_text("Source", "NovelAI Diffusion V4.5 C02D4F98")
+        info.add_text("Title", "NovelAI generated image")
+        src = tmp_path / "novelai.png"
+        Image.new("RGB", (64, 64)).save(src, pnginfo=info)
+        assert exif_generator(src) == "NovelAI"
+
+        out = tmp_path / "clean.png"
+        remove_ai_metadata(src, out)
+        assert exif_generator(out) is None
+
     def test_imagedescription_tag_ai_tool_detected(self, tmp_path: Path):
         # ...and the EXIF ImageDescription field.
         exif = piexif.dump(

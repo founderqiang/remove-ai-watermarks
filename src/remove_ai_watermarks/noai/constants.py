@@ -262,6 +262,16 @@ AI_GENERATOR_TOKENS: frozenset[str] = frozenset(
         "leonardo",
         "flux",
         "dreamstudio",
+        # Mined from the retained corpus 2026-06-22 (no C2PA -- a plain EXIF/PNG
+        # generator stamp was the only signal and we read none of them):
+        #   - NovelAI (anime SD): PNG tEXt Software="NovelAI", Source="NovelAI
+        #     Diffusion V4.5 <hash>", Title="NovelAI generated image".
+        #   - Reve Image (reve.com): EXIF Software / XMP CreatorTool = "reve.com"
+        #     (the bare token "reve" would false-positive on "forever"/"reverie").
+        #   - Aphrodite AI: EXIF Make / Software = "Aphrodite AI[ v1.0]".
+        "novelai",
+        "reve.com",
+        "aphrodite ai",
     }
 )
 

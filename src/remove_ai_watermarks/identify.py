@@ -623,13 +623,14 @@ def identify(image_path: Path, *, check_visible: bool = True, check_invisible: b
         if platform is None:
             platform = "Stable Diffusion / local pipeline (Automatic1111, ComfyUI, InvokeAI)"
 
-    # ── EXIF Software / XMP CreatorTool generator (cross-format) ─────
-    # Catches a generator tag (incl. inside AVIF/HEIF/JXL) when there is no C2PA.
+    # ── EXIF Software / XMP CreatorTool / PNG-text generator (cross-format) ─
+    # Catches a generator tag (incl. inside AVIF/HEIF/JXL and PNG text chunks)
+    # when there is no C2PA.
     if generator_tag := exif_generator(image_path):
-        signals.append(Signal("exif_generator", f"EXIF/XMP generator: {generator_tag}", "high"))
+        signals.append(Signal("exif_generator", f"Embedded generator tag: {generator_tag}", "high"))
         watermarks.append(f"Embedded generator tag: {generator_tag}")
         if platform is None:
-            platform = f"{generator_tag} (EXIF/XMP generator tag)"
+            platform = f"{generator_tag} (embedded generator tag)"
         if v := _vendor_of(generator_tag):
             ai_vendor_claims["exif_generator"] = v
 
