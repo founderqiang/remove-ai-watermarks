@@ -144,6 +144,14 @@ class ProvenanceReport:
     #   None        -- no C2PA AI source-type (verdict, if AI, came from another
     #                  signal: IPTC, AIGC, local gen params, xAI, ...).
     ai_source_kind: str | None = None
+    # True when the AI verdict rests on a metadata or embedded-invisible signal
+    # (C2PA AI issuer / SynthID proxy, IPTC, AIGC, local gen params, EXIF/xAI, or
+    # an open DWT-DCT / TrustMark decode) -- as opposed to a visible mark or a
+    # weak medium-confidence hint (hf-job, Samsung genAIType). It is exactly the
+    # set of signals an invisible/diffusion scrub targets: a visible-only or
+    # no-signal image has it False. Equivalent to ``confidence == "high"``;
+    # surfaced as a field so callers gate on intent, not on the string.
+    ai_from_metadata: bool = False
     watermarks: list[str] = field(default_factory=list[str])
     signals: list[Signal] = field(default_factory=list["Signal"])
     caveats: list[str] = field(default_factory=list[str])
@@ -758,8 +766,37 @@ def identify(image_path: Path, *, check_visible: bool = True, check_invisible: b
         # Only meaningful when the AI verdict actually came from the C2PA source
         # type; a non-C2PA AI signal (IPTC/AIGC/local gen) leaves it None.
         ai_source_kind=c2pa_source_kind if (is_ai and has_c2pa) else None,
+        ai_from_metadata=ai_from_metadata,
         watermarks=watermarks,
         signals=signals,
         caveats=caveats,
         integrity_clashes=clashes,
     )
+
+
+def has_invisible_target(image_path: Path) -> bool:
+    """True when a locally-detectable invisible/metadata AI signal is present.
+
+    The decision gate for the diffusion scrub (``invisible`` / ``all`` / ``batch``):
+    regenerating pixels removes an invisible watermark (SynthID, open DWT-DCT,
+    TrustMark) but degrades a real photo, so it must not run when there is nothing
+    to remove. Runs :func:`identify` with ``check_visible=False`` -- a visible mark
+    is handled by the separate visible pass and is NOT a diffusion target -- and
+    ``check_invisible=True`` so an open watermark counts. Returns
+    ``report.ai_from_metadata`` (C2PA AI issuer / SynthID proxy, IPTC, AIGC, local
+    gen params, EXIF/xAI, open DWT-DCT / TrustMark).
+
+    IMPORTANT -- this cannot prove a pixel SynthID is absent: SynthID is detectable
+    only through its C2PA proxy, so a metadata-stripped AI image reads as no signal
+    here. A False therefore means "no locally-detectable invisible target", not
+    "clean". Callers must NOT present a skip as a finished clean result.
+
+    Fail-safe: any error resolves to True so the removal still runs -- leaving a
+    watermark on a paid removal is worse than over-regenerating a clean image.
+    """
+    try:
+        report = identify(image_path, check_visible=False, check_invisible=True)
+    except Exception:  # unreadable / detector error -> do not skip the removal
+        log.debug("has_invisible_target: identify failed, defaulting to run", exc_info=True)
+        return True
+    return report.ai_from_metadata

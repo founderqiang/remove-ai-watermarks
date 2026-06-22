@@ -22,6 +22,7 @@ from remove_ai_watermarks.identify import (
     _integrity_clashes,
     _issuers_in,
     _vendor_of,
+    has_invisible_target,
     identify,
 )
 from remove_ai_watermarks.watermark_registry import GEMINI_SPARKLE_TRUST_CONF
@@ -292,12 +293,49 @@ class TestIdentifyRealSamples:
         assert r.confidence == "none"
         assert r.watermarks == []
 
+    def test_has_invisible_target_true_on_metadata_ai(self):
+        # The scrub gate: a C2PA/SynthID image and an IPTC "Made with AI" image are
+        # both invisible/metadata targets, so the diffusion scrub should run.
+        assert has_invisible_target(SAMPLES_DIR / "chatgpt-1.png") is True
+        assert has_invisible_target(SAMPLES_DIR / "mj-1.png") is True
+        # ai_from_metadata mirrors confidence == "high" and backs the helper.
+        assert identify(SAMPLES_DIR / "chatgpt-1.png", check_visible=False).ai_from_metadata is True
+
+    def test_has_invisible_target_false_on_clean_photo(self, clean_photo: Path):
+        # No detectable invisible signal -> skip the scrub (do not degrade a clean image).
+        assert has_invisible_target(clean_photo) is False
+        assert identify(clean_photo, check_visible=False).ai_from_metadata is False
+
     def test_strip_caveat_always_present(self, clean_photo: Path):
         r = identify(clean_photo, check_visible=False)
         assert any("not proof" in c for c in r.caveats)
 
     def test_returns_report_dataclass(self):
         assert isinstance(identify(SAMPLES_DIR / "firefly-1.png", check_visible=False), ProvenanceReport)
+
+
+class TestHasInvisibleTargetFailSafe:
+    """The scrub gate fails SAFE: when a detector errors, it runs the removal."""
+
+    def test_detector_error_defaults_to_run(self, tmp_path: Path):
+        # If identify raises (a detector crash), the gate must return True so the
+        # caller still attempts removal -- leaving a watermark on a paid removal is
+        # worse than over-regenerating. (Garbage bytes do NOT raise; identify returns
+        # a clean None verdict there, so that path correctly skips -- see below.)
+        bad = tmp_path / "x.png"
+        bad.write_bytes(b"not image bytes")
+        with patch("remove_ai_watermarks.identify.identify", side_effect=RuntimeError("boom")):
+            assert has_invisible_target(bad) is True
+
+    def test_unreadable_bytes_are_not_a_target(self, tmp_path: Path):
+        # No raise, no signal -> not a scrub target (the CLI rejects undecodable
+        # images earlier anyway; this only documents the gate's own verdict).
+        bad = tmp_path / "x.png"
+        bad.write_bytes(b"not image bytes")
+        assert has_invisible_target(bad) is False
+
+    def test_local_ai_params_are_a_target(self, tmp_png_with_ai_metadata: Path):
+        assert has_invisible_target(tmp_png_with_ai_metadata) is True
 
 
 # ── Local diffusion parameters (Stable Diffusion / ComfyUI) ─────────

@@ -365,6 +365,12 @@ remove-ai-watermarks invisible image.png -o clean.png --humanize 4.0 --unsharp 0
 # --adaptive-polish (ON by default) restores the input's detail level (sparing
 # text) to counter the over-smoothed look; it self-limits to a no-op where
 # there is no detail deficit. Disable with --no-adaptive-polish.
+# By default, if no invisible AI watermark is locally detectable, the diffusion
+# scrub is SKIPPED (regenerating pixels would only degrade a clean image): for
+# `invisible` that writes no output and exits 2, for `all` it skips step 2 but
+# still strips metadata and exits 0. A skip never claims the image is clean
+# (a pixel SynthID is undetectable once its metadata is gone). Pass --force to
+# regenerate regardless when you know the image is AI-generated.
 
 # Check / strip AI metadata (C2PA, EXIF, "Made with AI" labels)
 # --check also flags SynthID-bearing sources: a C2PA manifest signed by

@@ -290,7 +290,7 @@ class TestInvisibleCommand:
         ):
             result = runner.invoke(
                 main,
-                ["invisible", str(sample_png), "-o", str(output)],
+                ["invisible", str(sample_png), "-o", str(output), "--force"],
             )
         assert result.exit_code == 0, result.output
         assert output.exists()
@@ -303,7 +303,7 @@ class TestInvisibleCommand:
             patch("remove_ai_watermarks.cli.InvisibleEngine", mock_cls, create=True),
             patch("remove_ai_watermarks.invisible_engine.InvisibleEngine", mock_cls),
         ):
-            result = runner.invoke(main, ["invisible", str(sample_png)])
+            result = runner.invoke(main, ["invisible", str(sample_png), "--force"])
         assert result.exit_code == 0, result.output
         expected = sample_png.with_stem(sample_png.stem + "_clean")
         assert expected.exists()
@@ -315,7 +315,7 @@ class TestInvisibleCommand:
             patch("remove_ai_watermarks.cli.InvisibleEngine", mock_cls, create=True),
             patch("remove_ai_watermarks.invisible_engine.InvisibleEngine", mock_cls),
         ):
-            result = runner.invoke(main, ["invisible", str(sample_png)])
+            result = runner.invoke(main, ["invisible", str(sample_png), "--force"])
         assert result.exit_code == 0, result.output
         # adaptive_polish is ON by default (self-gating, so a no-op where not needed).
         assert mock_engine.remove_watermark.call_args.kwargs["adaptive_polish"] is True
@@ -330,7 +330,7 @@ class TestInvisibleCommand:
             patch("remove_ai_watermarks.cli.InvisibleEngine", mock_cls, create=True),
             patch("remove_ai_watermarks.invisible_engine.InvisibleEngine", mock_cls),
         ):
-            result = runner.invoke(main, ["invisible", str(sample_png), "--no-adaptive-polish"])
+            result = runner.invoke(main, ["invisible", str(sample_png), "--no-adaptive-polish", "--force"])
         assert result.exit_code == 0, result.output
         assert mock_engine.remove_watermark.call_args.kwargs["adaptive_polish"] is False
 
@@ -343,7 +343,7 @@ class TestInvisibleCommand:
         ):
             result = runner.invoke(
                 main,
-                ["invisible", str(sample_png), "--model", "org/custom-sdxl", "--guidance-scale", "5.5"],
+                ["invisible", str(sample_png), "--model", "org/custom-sdxl", "--guidance-scale", "5.5", "--force"],
             )
         assert result.exit_code == 0, result.output
         assert mock_cls.call_args.kwargs["model_id"] == "org/custom-sdxl"
@@ -356,7 +356,7 @@ class TestInvisibleCommand:
             patch("remove_ai_watermarks.cli.InvisibleEngine", mock_cls, create=True),
             patch("remove_ai_watermarks.invisible_engine.InvisibleEngine", mock_cls),
         ):
-            result = runner.invoke(main, ["invisible", str(sample_png), "--pipeline", "default"])
+            result = runner.invoke(main, ["invisible", str(sample_png), "--pipeline", "default", "--force"])
         assert result.exit_code == 0, result.output
         # The legacy value warns and is normalized to "sdxl" before the engine is built.
         assert "deprecated" in result.output.lower()
@@ -369,7 +369,7 @@ class TestInvisibleCommand:
             patch("remove_ai_watermarks.cli.InvisibleEngine", mock_cls, create=True),
             patch("remove_ai_watermarks.invisible_engine.InvisibleEngine", mock_cls),
         ):
-            result = runner.invoke(main, ["invisible", str(sample_png), "--pipeline", "sdxl"])
+            result = runner.invoke(main, ["invisible", str(sample_png), "--pipeline", "sdxl", "--force"])
         assert result.exit_code == 0, result.output
         assert "deprecated" not in result.output.lower()
         assert mock_cls.call_args.kwargs["pipeline"] == "sdxl"
@@ -377,6 +377,57 @@ class TestInvisibleCommand:
     def test_invisible_nonexistent_file(self, runner):
         result = runner.invoke(main, ["invisible", "/nonexistent/file.png"])
         assert result.exit_code != 0
+
+    def test_invisible_no_signal_skips_and_exits_two(self, runner, sample_png, tmp_path):
+        """P0#5: when no invisible AI watermark is locally detectable, the diffusion
+        scrub must NOT run (it would only degrade a clean image). Mirrors the visible
+        no-mark contract: write no output, exit 2, and DO NOT imply the image is
+        clean (a stripped SynthID proxy is not proof of absence)."""
+        mock_cls, mock_engine = _mock_invisible_engine()
+        output = tmp_path / "clean.png"
+        with (
+            patch("remove_ai_watermarks.invisible_engine.is_available", return_value=True),
+            patch("remove_ai_watermarks.cli.InvisibleEngine", mock_cls, create=True),
+            patch("remove_ai_watermarks.invisible_engine.InvisibleEngine", mock_cls),
+        ):
+            result = runner.invoke(main, ["invisible", str(sample_png), "-o", str(output)])
+        assert result.exit_code == 2, result.output
+        assert not output.exists()
+        mock_engine.remove_watermark.assert_not_called()
+        assert "--force" in result.output
+        assert "SynthID" in result.output  # the message must preserve removal uncertainty
+
+    def test_invisible_force_runs_scrub_on_no_signal(self, runner, sample_png, tmp_path):
+        """--force overrides the no-signal skip: the scrub runs regardless."""
+        mock_cls, mock_engine = _mock_invisible_engine()
+        output = tmp_path / "clean.png"
+        with (
+            patch("remove_ai_watermarks.invisible_engine.is_available", return_value=True),
+            patch("remove_ai_watermarks.cli.InvisibleEngine", mock_cls, create=True),
+            patch("remove_ai_watermarks.invisible_engine.InvisibleEngine", mock_cls),
+        ):
+            result = runner.invoke(main, ["invisible", str(sample_png), "-o", str(output), "--force"])
+        assert result.exit_code == 0, result.output
+        mock_engine.remove_watermark.assert_called_once()
+
+    def test_invisible_runs_without_force_when_signal_present(self, runner, tmp_path):
+        """An image carrying an AI metadata signal IS a scrub target, so the run
+        proceeds with no --force needed."""
+        img = Image.fromarray(np.random.default_rng(0).integers(0, 255, (200, 200, 3), dtype=np.uint8))
+        pnginfo = PngInfo()
+        pnginfo.add_text("parameters", "Steps: 20, Sampler: Euler, a test landscape")
+        src = tmp_path / "ai.png"
+        img.save(src, pnginfo=pnginfo)
+        output = tmp_path / "clean.png"
+        mock_cls, mock_engine = _mock_invisible_engine()
+        with (
+            patch("remove_ai_watermarks.invisible_engine.is_available", return_value=True),
+            patch("remove_ai_watermarks.cli.InvisibleEngine", mock_cls, create=True),
+            patch("remove_ai_watermarks.invisible_engine.InvisibleEngine", mock_cls),
+        ):
+            result = runner.invoke(main, ["invisible", str(src), "-o", str(output)])
+        assert result.exit_code == 0, result.output
+        mock_engine.remove_watermark.assert_called_once()
 
 
 class TestAllCommand:
@@ -397,7 +448,7 @@ class TestAllCommand:
         ):
             result = runner.invoke(
                 main,
-                ["all", str(sample_png), "-o", str(output)],
+                ["all", str(sample_png), "-o", str(output), "--force"],
             )
         assert result.exit_code == 0, result.output
         assert output.exists()
@@ -418,9 +469,27 @@ class TestAllCommand:
             patch("remove_ai_watermarks.invisible_engine.is_available", return_value=True),
             patch("remove_ai_watermarks.watermark_registry.best_auto_mark", return_value=None) as mock_best,
         ):
-            result = runner.invoke(main, ["all", str(sample_png), "-o", str(output)])
+            result = runner.invoke(main, ["all", str(sample_png), "-o", str(output), "--force"])
         assert result.exit_code == 0, result.output
         mock_best.assert_called()  # the registry auto-detector drove the visible pass
+
+    def test_all_skips_invisible_on_no_signal_but_succeeds(self, runner, sample_png, tmp_path):
+        """P0#5: with no detectable invisible watermark and no --force, `all` skips
+        the destructive step 2 (pixels left intact) but STILL succeeds (exit 0) --
+        visible removal + metadata strip ran and a file is written. Distinct from the
+        GPU-missing skip, which is a non-zero failure."""
+        mock_cls, mock_engine = _mock_invisible_engine()
+        output = tmp_path / "clean.png"
+        with (
+            patch("remove_ai_watermarks.cli.InvisibleEngine", mock_cls, create=True),
+            patch("remove_ai_watermarks.invisible_engine.InvisibleEngine", mock_cls),
+            patch("remove_ai_watermarks.invisible_engine.is_available", return_value=True),
+        ):
+            result = runner.invoke(main, ["all", str(sample_png), "-o", str(output)])
+        assert result.exit_code == 0, result.output
+        assert output.exists()
+        mock_engine.remove_watermark.assert_not_called()
+        assert "Skipped (no invisible" in result.output
 
     def test_all_loud_warning_and_nonzero_exit_when_gpu_missing(self, runner, sample_png, tmp_path):
         """Regression (#14/#47): when the GPU extra is absent the invisible step is
@@ -453,7 +522,7 @@ class TestAllCommand:
             patch("remove_ai_watermarks.cli.invisible_available", return_value=True, create=True),
             patch("remove_ai_watermarks.invisible_engine.is_available", return_value=True),
         ):
-            result = runner.invoke(main, ["all", str(src), "-o", str(output)])
+            result = runner.invoke(main, ["all", str(src), "-o", str(output), "--force"])
 
         assert result.exit_code == 0, result.output
         out = cv2.imread(str(output), cv2.IMREAD_UNCHANGED)
@@ -588,10 +657,32 @@ class TestBatchCommand:
         ):
             result = runner.invoke(
                 main,
+                ["batch", str(input_dir), "-o", str(output_dir), "--mode", "invisible", "--force"],
+            )
+        assert result.exit_code == 0, result.output
+        assert "3 processed" in result.output
+
+    def test_batch_invisible_skips_no_signal_and_copies_through(self, runner, tmp_path):
+        """P0#5: batch invisible mode skips the scrub on signal-less images (no
+        --force) and copies the input through, so the output dir is complete with the
+        pixels left intact and the engine never called."""
+        input_dir = _make_batch_dir(tmp_path)
+        output_dir = tmp_path / "output"
+        mock_cls, mock_engine = _mock_invisible_engine()
+        with (
+            patch("remove_ai_watermarks.cli.InvisibleEngine", mock_cls, create=True),
+            patch("remove_ai_watermarks.invisible_engine.InvisibleEngine", mock_cls),
+            patch("remove_ai_watermarks.cli.invisible_available", return_value=True, create=True),
+            patch("remove_ai_watermarks.invisible_engine.is_available", return_value=True),
+        ):
+            result = runner.invoke(
+                main,
                 ["batch", str(input_dir), "-o", str(output_dir), "--mode", "invisible"],
             )
         assert result.exit_code == 0, result.output
         assert "3 processed" in result.output
+        assert len(list(output_dir.glob("*.png"))) == 3  # inputs copied through
+        mock_engine.remove_watermark.assert_not_called()
 
     def test_batch_all_mode(self, runner, tmp_path):
         input_dir = _make_batch_dir(tmp_path)
@@ -605,7 +696,7 @@ class TestBatchCommand:
         ):
             result = runner.invoke(
                 main,
-                ["batch", str(input_dir), "-o", str(output_dir), "--mode", "all"],
+                ["batch", str(input_dir), "-o", str(output_dir), "--mode", "all", "--force"],
             )
         assert result.exit_code == 0, result.output
         assert "3 processed" in result.output
@@ -631,7 +722,7 @@ class TestBatchCommand:
         ):
             result = runner.invoke(
                 main,
-                ["batch", str(input_dir), "-o", str(output_dir), "--mode", "all"],
+                ["batch", str(input_dir), "-o", str(output_dir), "--mode", "all", "--force"],
             )
         assert result.exit_code == 0, result.output
 
@@ -655,7 +746,7 @@ class TestBatchCommand:
         ):
             result = runner.invoke(
                 main,
-                ["batch", str(input_dir), "-o", str(output_dir), "--mode", "invisible", "--auto"],
+                ["batch", str(input_dir), "-o", str(output_dir), "--mode", "invisible", "--auto", "--force"],
             )
         assert result.exit_code == 0, result.output
         assert "2 processed" in result.output
