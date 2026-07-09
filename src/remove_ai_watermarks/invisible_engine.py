@@ -229,6 +229,12 @@ class InvisibleEngine:
         # SDXL img2img runs near its ~1024 training size instead of distorting on a
         # tiny latent (a 381x512 portrait wrecks at native -- issue #36 follow-up).
         # The output is restored to orig_size below, so the floor is transparent.
+        # Register the HEIF/AVIF opener so a .heic/.avif input (now a SUPPORTED_FORMAT)
+        # decodes here too. The --force skip path bypasses image_io.imread, which is
+        # what would otherwise register it, so a bare Image.open would fail on HEIC.
+        from remove_ai_watermarks import image_io
+
+        image_io._register_heif()
         image = Image.open(image_path)
         image = ImageOps.exif_transpose(image)
         orig_size = image.size  # (width, height)
@@ -261,7 +267,9 @@ class InvisibleEngine:
         # Cleaned up in the finally block via _tmp_path.
         _tmp_fd, _tmp_str = tempfile.mkstemp(suffix=".png")
         _tmp_path = Path(_tmp_str)
-        image.save(_tmp_path)
+        # Convert to RGB before the PNG temp: the diffusion pass is RGB anyway, and a
+        # non-RGB source mode (e.g. a CMYK JPEG) cannot be written as PNG and would raise.
+        image.convert("RGB").save(_tmp_path)
         os.close(_tmp_fd)
         image_path = _tmp_path
 

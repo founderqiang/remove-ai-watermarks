@@ -47,7 +47,7 @@ Backend = Literal["auto", "cv2", "migan", "lama"]
 #     a clean corner). Lowest recall on faint/moved marks.
 #   * ``auto`` (default): relax a mark's gate ONLY when the image carries same-product
 #     evidence the mark is there -- metadata provenance for that vendor, or a confidently
-#     detected sibling mark of the same product (see ``_resolve_relax``). No evidence ->
+#     detected sibling mark of the same product (see ``resolve_relax``). No evidence ->
 #     stays strict. Safe: it only escalates where the mark is corroborated.
 #   * ``assume_ai``: relax every mark's gate regardless of evidence -- the caller asserts
 #     the image is AI and wants the mark gone (e.g. a metadata-stripped screenshot uploaded
@@ -179,7 +179,10 @@ class KnownMark:
         det = self.detect(image, provenance=provenance)
         if not (det.detected or force):
             return Localization(det.detected, det.confidence, det.region, None)
-        mask = self._mask(image, force=force)
+        # Pass the (provenance-aware) detection to the mask builder so it does NOT
+        # re-detect at a different trust level -- a relaxed sparkle must not be
+        # re-demoted into a None mask (reported-removed-but-unchanged).
+        mask = self._mask(image, force=force, detection=det)
         return Localization(det.detected, det.confidence, det.region, mask)
 
     def remove(
@@ -315,8 +318,14 @@ def _gemini_detect(image: NDArray[Any], *, provenance: bool = False) -> MarkDete
     return MarkDetection("gemini", "Google Gemini sparkle", "bottom-right", detected, d.confidence, d.region)
 
 
-def _gemini_mask(image: NDArray[Any], *, force: bool = False) -> NDArray[Any] | None:
-    return _engine("gemini").footprint_mask(image, force=force)
+def _gemini_mask(
+    image: NDArray[Any], *, force: bool = False, detection: MarkDetection | None = None
+) -> NDArray[Any] | None:
+    # Reuse the decision's provenance-aware region (skip the strict re-detect that would
+    # otherwise re-demote a relaxed sparkle to None); None region -> footprint_mask
+    # falls back to its own detect-then-force path (direct/--no-detect callers).
+    region = detection.region if (detection is not None and detection.detected) else None
+    return _engine("gemini").footprint_mask(image, force=force, region=region)
 
 
 # The three text-mark engines (Doubao/Jimeng/Samsung) share the TextMarkEngine
@@ -333,7 +342,12 @@ def _text_mark_detect(key: str, label: str, location: str) -> Callable[..., Mark
 
 
 def _text_mark_mask(key: str) -> Callable[..., NDArray[Any] | None]:
-    def mask(image: NDArray[Any], *, force: bool = False) -> NDArray[Any] | None:
+    def mask(
+        image: NDArray[Any], *, force: bool = False, detection: MarkDetection | None = None
+    ) -> NDArray[Any] | None:
+        # Text masks rebuild the glyph blob template-free (no trust gate to re-apply), so
+        # the detection is not needed here; accepted for the uniform _mask signature.
+        del detection
         return _engine(key).footprint_mask(image, force=force)
 
     return mask
@@ -354,7 +368,12 @@ def _pill_detect(image: NDArray[Any], *, provenance: bool = False) -> MarkDetect
     return MarkDetection("jimeng_pill", "Jimeng AI生成 pill", "top-left", d.detected, d.confidence, d.region)
 
 
-def _pill_mask(image: NDArray[Any], *, force: bool = False) -> NDArray[Any] | None:
+def _pill_mask(
+    image: NDArray[Any], *, force: bool = False, detection: MarkDetection | None = None
+) -> NDArray[Any] | None:
+    # The pill mask is a fixed top-left geometry box, independent of the detection;
+    # accepted for the uniform _mask signature.
+    del detection
     return _engine("jimeng_pill").footprint_mask(image, force=force)
 
 
@@ -406,7 +425,7 @@ def detect_marks(
     return [m.detect(image, provenance=m.key in provenance) for m in _REGISTRY if include_explicit or m.in_auto]
 
 
-def _resolve_relax(
+def resolve_relax(
     key: str,
     *,
     sensitivity: Sensitivity,
@@ -487,14 +506,14 @@ def decide(candidates: list[Candidate], context: Context) -> list[Decision]:
     """The removal ARBITER: a pure function turning perception + context into the
     ordered list of marks to remove (and the trust level each was accepted at).
 
-    All policy lives here, in one place: per-mark relaxation (:func:`_resolve_relax`,
+    All policy lives here, in one place: per-mark relaxation (:func:`resolve_relax`,
     which needs the strict-detected siblings for ``auto`` cross-mark corroboration) and
     the capture-less pill gate (:func:`_keep_pill`). No image, no I/O -- so it is
     unit-testable in isolation and the same decision drives every caller."""
     strict_keys = {c.key for c in candidates if c.detected_strict}
     fired: list[Decision] = []
     for c in candidates:
-        relax = _resolve_relax(
+        relax = resolve_relax(
             c.key, sensitivity=context.sensitivity, provenance=context.provenance, strict_keys=strict_keys
         )
         if c.detected_relaxed if relax else c.detected_strict:
@@ -538,6 +557,10 @@ def remove_auto_marks(
     result = image
     labels: list[str] = []
     for d in decide(_build_candidates(image), context):
-        result, _ = get_mark(d.candidate.key).remove(result, backend=backend, provenance=d.relax, force=False)
-        labels.append(d.candidate.label)
+        result, region = get_mark(d.candidate.key).remove(result, backend=backend, provenance=d.relax, force=False)
+        # Only report the mark as removed when a fill actually happened: remove() returns
+        # a None region when the localized mask came back empty, and reporting it anyway
+        # would claim a removal that left the pixels unchanged.
+        if region is not None:
+            labels.append(d.candidate.label)
     return result, labels

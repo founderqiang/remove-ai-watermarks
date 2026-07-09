@@ -130,38 +130,36 @@ class TestLocalizeFill:
 
 
 class TestSensitivity:
-    """``_resolve_relax`` turns the sensitivity policy + evidence into the per-mark
+    """``resolve_relax`` turns the sensitivity policy + evidence into the per-mark
     relaxation boolean the engines consume."""
 
     def test_strict_never_relaxes(self):
         # even with metadata provenance, strict keeps the conservative gate
         assert (
-            reg._resolve_relax("gemini", sensitivity="strict", provenance=frozenset({"gemini"}), strict_keys=set())
+            reg.resolve_relax("gemini", sensitivity="strict", provenance=frozenset({"gemini"}), strict_keys=set())
             is False
         )
 
     def test_assume_ai_always_relaxes(self):
-        assert reg._resolve_relax("gemini", sensitivity="assume_ai", provenance=frozenset(), strict_keys=set()) is True
+        assert reg.resolve_relax("gemini", sensitivity="assume_ai", provenance=frozenset(), strict_keys=set()) is True
 
     def test_auto_relaxes_on_own_metadata(self):
         assert (
-            reg._resolve_relax("gemini", sensitivity="auto", provenance=frozenset({"gemini"}), strict_keys=set())
-            is True
+            reg.resolve_relax("gemini", sensitivity="auto", provenance=frozenset({"gemini"}), strict_keys=set()) is True
         )
 
     def test_auto_strict_without_evidence(self):
-        assert reg._resolve_relax("gemini", sensitivity="auto", provenance=frozenset(), strict_keys=set()) is False
+        assert reg.resolve_relax("gemini", sensitivity="auto", provenance=frozenset(), strict_keys=set()) is False
 
     def test_auto_cross_mark_same_product(self):
         # a detected Jimeng wordmark relaxes the Jimeng pill (same product, other corner)
         assert (
-            reg._resolve_relax("jimeng_pill", sensitivity="auto", provenance=frozenset(), strict_keys={"jimeng"})
-            is True
+            reg.resolve_relax("jimeng_pill", sensitivity="auto", provenance=frozenset(), strict_keys={"jimeng"}) is True
         )
 
     def test_auto_no_cross_mark_across_products(self):
         # a detected Jimeng wordmark must NOT relax Doubao (distinct products, same corner)
-        assert reg._resolve_relax("doubao", sensitivity="auto", provenance=frozenset(), strict_keys={"jimeng"}) is False
+        assert reg.resolve_relax("doubao", sensitivity="auto", provenance=frozenset(), strict_keys={"jimeng"}) is False
 
     def test_remove_auto_marks_accepts_all_sensitivities(self):
         blank = np.zeros((256, 256, 3), np.uint8)
@@ -225,3 +223,39 @@ class TestArbiter:
             self._c("jimeng_pill", strict=True, relaxed=True, flat=False),
         ]
         assert "jimeng_pill" in self._keys(cands, reg.Context())
+
+
+class TestProvenanceMaskThreading:
+    """Regression for the provenance-relaxed Gemini no-op (#1) and the false 'removed'
+    label (#2). Before the fix, footprint_mask re-detected WITHOUT trust_provenance, the
+    FP gate demoted the sparkle to detected=False, the mask came back None, yet
+    remove_auto_marks still reported the mark as removed."""
+
+    def test_relaxed_sparkle_yields_mask(self, monkeypatch: pytest.MonkeyPatch):
+        # A sparkle a strict re-detect would demote (detected False) but a
+        # provenance-relaxed detect accepts must still produce a removal mask.
+        from remove_ai_watermarks.gemini_engine import DetectionResult
+
+        def fake(image, force_size=None, *, trust_provenance=False):
+            return DetectionResult(
+                detected=trust_provenance, confidence=0.42 if trust_provenance else 0.30, region=(400, 400, 60)
+            )
+
+        monkeypatch.setattr(reg._engine("gemini"), "detect_watermark", fake)
+        img = np.full((512, 512, 3), 90, np.uint8)
+        assert reg.get_mark("gemini").localize(img, provenance=True).mask is not None
+        assert reg.get_mark("gemini").localize(img, provenance=False).mask is None
+
+    def test_no_label_when_mask_none(self, monkeypatch: pytest.MonkeyPatch):
+        # A decided mark whose mask comes back None must NOT be reported as removed.
+        from remove_ai_watermarks.gemini_engine import DetectionResult
+
+        eng = reg._engine("gemini")
+        monkeypatch.setattr(
+            eng,
+            "detect_watermark",
+            lambda image, force_size=None, *, trust_provenance=False: DetectionResult(True, 0.9, (10, 10, 40)),
+        )
+        monkeypatch.setattr(eng, "footprint_mask", lambda image, *, force=False, region=None, dilate=None: None)
+        _, removed = reg.remove_auto_marks(np.zeros((256, 256, 3), np.uint8), sensitivity="strict", backend="cv2")
+        assert "Google Gemini sparkle" not in removed

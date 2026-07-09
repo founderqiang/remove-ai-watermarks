@@ -1359,3 +1359,28 @@ class TestC2paCloudManifest:
         assert r.is_ai_generated is None
         assert any("Durable Content Credentials" in w for w in r.watermarks)
         assert any(s.name == "c2pa_cloud" for s in r.signals)
+
+
+def test_remove_all_bypasses_lossless_jpeg(tmp_path, monkeypatch):
+    # keep_standard=False (--remove-all) must NOT take the AI-only lossless JPEG path,
+    # which leaves standard (non-AI) metadata in place; it must fall through to the full
+    # re-encode strip (#7).
+    import remove_ai_watermarks.metadata as md
+
+    calls: list[int] = []
+    real = md._strip_jpeg_metadata_lossless
+
+    def spy(s, o):
+        calls.append(1)
+        return real(s, o)
+
+    monkeypatch.setattr(md, "_strip_jpeg_metadata_lossless", spy)
+    src = tmp_path / "x.jpg"
+    Image.new("RGB", (32, 32), (128, 128, 128)).save(src, "JPEG")
+    out = tmp_path / "o.jpg"
+
+    md.remove_ai_metadata(src, out, keep_standard=True)
+    assert calls, "lossless JPEG strip should run when keeping standard metadata"
+    calls.clear()
+    md.remove_ai_metadata(src, out, keep_standard=False)
+    assert not calls, "keep_standard=False must bypass the AI-only lossless JPEG path"

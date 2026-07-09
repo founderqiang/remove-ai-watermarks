@@ -167,7 +167,20 @@ class TestPillGate:
         assert "Jimeng AI生成 pill" not in removed
 
     def test_pill_dropped_on_doubao_even_with_metadata(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # doubao is faked as detected, which drives the pill gate (pill never rides on a
+        # Doubao detection). The same flat + jimeng-metadata setup WITHOUT doubao keeps the
+        # pill (test_pill_kept_with_metadata_on_flat_footprint), so doubao is the
+        # differentiator. Doubao itself is not asserted in `removed` here: this synthetic
+        # frame is flat with no real glyph, so the text mask has nothing to fill (its real
+        # removal is covered by TestRealSample on the committed doubao sample).
         self._fakes(monkeypatch, {"doubao", "jimeng_pill"})
         _, removed = registry.remove_auto_marks(np.full((400, 300, 3), 150, np.uint8), provenance=frozenset({"jimeng"}))
-        assert "Doubao 豆包AI生成 text" in removed
         assert "Jimeng AI生成 pill" not in removed
+
+
+def test_detect_bgra_no_crash() -> None:
+    # A 4-channel BGRA array must be normalized, not crash cv2.cvtColor(BGR2GRAY) (#10).
+    bgra = np.zeros((256, 256, 4), np.uint8)
+    det = PillEngine().detect(bgra)
+    assert det.detected in (True, False)
+    assert PillEngine().footprint_texture(bgra) >= 0.0

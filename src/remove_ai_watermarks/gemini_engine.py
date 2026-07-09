@@ -498,7 +498,12 @@ class GeminiEngine:
     _MASK_DILATE_FRAC = 0.18  # dilation radius as a fraction of the sparkle scale
 
     def footprint_mask(
-        self, image: NDArray[Any], *, force: bool = False, dilate: int | None = None
+        self,
+        image: NDArray[Any],
+        *,
+        force: bool = False,
+        dilate: int | None = None,
+        region: tuple[int, int, int, int] | None = None,
     ) -> NDArray[Any] | None:
         """Full-frame uint8 mask (255 = sparkle) of the sparkle footprint, for the
         shared fill removal path (cv2 / MI-GAN / LaMa), or None.
@@ -506,20 +511,29 @@ class GeminiEngine:
         The footprint is the interpolated captured alpha at the detected scale,
         thresholded LOW so the faint halo is included, then dilated by a
         sparkle-relative margin. When ``force`` and nothing is detected, falls back to
-        the default sparkle slot for the image size (the ``--no-detect`` path). The
-        caller gates on the trust-confidence detection.
+        the default sparkle slot for the image size (the ``--no-detect`` path).
+
+        ``region`` is the already-resolved ``(x, y, scale)`` from the caller's detection
+        (the registry passes the decision's provenance-aware region). When given, the
+        mask is built from it directly WITHOUT a second internal detect -- otherwise a
+        provenance/assume-relaxed sparkle would be re-demoted by the strict re-detect and
+        yield no mask (reported-removed-but-unchanged). Absent ``region``, direct callers
+        keep the detect-then-force behavior.
         """
         image = image_io.to_bgr(image)
         h, w = image.shape[:2]
-        det = self.detect_watermark(image)
-        if det.detected:
-            x, y, scale = det.region[0], det.region[1], det.region[2]
-        elif force:
-            cfg = get_watermark_config(w, h)
-            x, y = cfg.get_position(w, h)
-            scale = cfg.logo_size
+        if region is not None:
+            x, y, scale = region[0], region[1], region[2]
         else:
-            return None
+            det = self.detect_watermark(image)
+            if det.detected:
+                x, y, scale = det.region[0], det.region[1], det.region[2]
+            elif force:
+                cfg = get_watermark_config(w, h)
+                x, y = cfg.get_position(w, h)
+                scale = cfg.logo_size
+            else:
+                return None
         alpha = self.get_interpolated_alpha(scale)
         fp = self._footprint_indices(alpha, (x, y), image.shape)
         if fp is None:

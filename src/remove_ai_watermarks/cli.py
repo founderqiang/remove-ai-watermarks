@@ -381,7 +381,13 @@ def _remove_visible_auto(
     bk: watermark_registry.Backend = backend  # type: ignore[assignment]
     sens = _parse_sensitivity(sensitivity)
     provenance = _visible_provenance(source_path)
-    result, removed = watermark_registry.remove_auto_marks(image, sensitivity=sens, provenance=provenance, backend=bk)
+    try:
+        result, removed = watermark_registry.remove_auto_marks(
+            image, sensitivity=sens, provenance=provenance, backend=bk
+        )
+    except RuntimeError as e:  # e.g. a selected migan/lama backend whose extra is absent
+        console.print(f"  Error: {e}")
+        raise SystemExit(1) from e
     if not removed:
         return image, None
     return result, ", ".join(removed)
@@ -576,15 +582,25 @@ def cmd_visible(
         from remove_ai_watermarks import api
 
         t0 = time.monotonic()
-        with console.status("Detecting & removing visible marks..."):
-            result, removed = api.remove_visible(
-                str(source), str(output), sensitivity=sens, backend=bk, strip_metadata=strip_metadata
-            )
+        try:
+            with console.status("Detecting & removing visible marks..."):
+                result, removed = api.remove_visible(
+                    str(source),
+                    str(output),
+                    sensitivity=sens,
+                    backend=bk,
+                    strip_metadata=strip_metadata,
+                    write_noop=False,
+                )
+        except RuntimeError as e:  # e.g. a selected migan/lama backend whose extra is absent
+            console.print(f"  Error: {e}")
+            raise SystemExit(1) from e
         elapsed = time.monotonic() - t0
         h, w = result.shape[:2]
         console.print(f"  Input:  {source.name}  ({w}x{h})")
         if not removed:
-            output.unlink(missing_ok=True)  # api wrote a no-op copy; the no-mark contract writes nothing
+            # write_noop=False means nothing was written, so a pre-existing file at the
+            # output path is left intact (the no-mark contract writes nothing).
             console.print("  No known visible mark detected (gemini / doubao / jimeng / jimeng-pill / samsung).")
             _no_visible_mark_exit(source, sensitivity=sens)
         console.print(f"  Removed: {', '.join(removed)}")
@@ -603,9 +619,10 @@ def cmd_visible(
     provenance = _visible_provenance(source)
     target = "gemini" if mark == "auto" else mark  # --no-detect auto: gemini fallback
     chosen = registry.get_mark(target)
-    # A single explicit mark has no cross-mark pass, so its relaxation is just the
-    # sensitivity + provenance decision (no sibling corroboration).
-    prov = sens == "assume_ai" or (sens == "auto" and chosen.key in provenance)
+    # A single explicit mark has no cross-mark pass (no sibling corroboration), so use the
+    # canonical arbiter policy with an empty strict-sibling set instead of re-deriving it
+    # inline (keeps this in lockstep with `decide`).
+    prov = registry.resolve_relax(chosen.key, sensitivity=sens, provenance=provenance, strict_keys=set())
     det = chosen.detect(image, provenance=prov)
     if detect and not det.detected:
         console.print(f"  {chosen.label} not detected  (conf {det.confidence:.2f}). Use --no-detect to force.")
@@ -613,8 +630,12 @@ def cmd_visible(
     if det.detected:
         console.print(f"  {chosen.label} detected  ({chosen.location}, conf {det.confidence:.2f})")
     t0 = time.monotonic()
-    with console.status(f"Removing {chosen.label}... ({resolved_backend})"):
-        result, _ = chosen.remove(image, backend=bk, provenance=prov, force=not detect)
+    try:
+        with console.status(f"Removing {chosen.label}... ({resolved_backend})"):
+            result, _ = chosen.remove(image, backend=bk, provenance=prov, force=not detect)
+    except RuntimeError as e:  # e.g. a selected migan/lama backend whose extra is absent
+        console.print(f"  Error: {e}")
+        raise SystemExit(1) from e
     elapsed = time.monotonic() - t0
 
     # Save (rejoins the original alpha plane unchanged) + strip metadata.

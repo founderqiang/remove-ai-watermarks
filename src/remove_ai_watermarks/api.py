@@ -58,6 +58,7 @@ def remove_visible(
     sensitivity: Sensitivity = "auto",
     backend: Backend = "auto",
     strip_metadata: bool = True,
+    write_noop: bool = True,
 ) -> tuple[NDArray[Any], list[str]]:
     """Remove every detected known visible AI mark (Gemini sparkle, Doubao/Jimeng/
     Samsung text, the Jimeng pill) via localize -> fill, returning ``(result_bgr,
@@ -81,6 +82,11 @@ def remove_visible(
     also strips AI provenance metadata (C2PA/EXIF/XMP/IPTC) from the written output via
     the lossless :func:`metadata.remove_ai_metadata`, so a library call does exactly
     what the CLI does. Only applies when ``output`` is given.
+
+    ``write_noop`` (default True) controls whether ``output`` is written when NOTHING was
+    removed: True writes a clean passthrough copy (an idempotent clean); False leaves the
+    output path untouched, so a caller that treats "no mark" as "produce nothing" (the CLI
+    ``visible`` no-mark contract) does not clobber a pre-existing file at that path.
     """
     from remove_ai_watermarks import image_io, watermark_registry
 
@@ -98,19 +104,24 @@ def remove_visible(
     result, removed = watermark_registry.remove_auto_marks(
         bgr, sensitivity=sensitivity, provenance=provenance, backend=backend
     )
-    if output is not None:
-        same_format = isinstance(source, (str, Path)) and Path(source).suffix.lower() == Path(output).suffix.lower()
+    if output is not None and (removed or write_noop):
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        same_format = isinstance(source, (str, Path)) and Path(source).suffix.lower() == out_path.suffix.lower()
         if not removed and same_format:
             # Nothing was removed: copy the ORIGINAL bytes verbatim instead of a lossy
             # re-encode of its decode, so the pixels stay bit-identical (the metadata
-            # strip below is lossless, so it does not disturb them either).
-            import shutil
+            # strip below is lossless, so it does not disturb them either). Skip the copy
+            # for an in-place call (output == source): the bytes are already there, and
+            # shutil.copyfile would raise SameFileError.
+            if Path(source).resolve() != out_path.resolve():  # type: ignore[arg-type]
+                import shutil
 
-            shutil.copyfile(source, output)  # type: ignore[arg-type]
+                shutil.copyfile(source, out_path)  # type: ignore[arg-type]
         else:
-            image_io.write_bgr_with_alpha(output, result, alpha)
+            image_io.write_bgr_with_alpha(out_path, result, alpha)
         if strip_metadata:
             from remove_ai_watermarks import metadata
 
-            metadata.remove_ai_metadata(Path(output), Path(output))
+            metadata.remove_ai_metadata(out_path, out_path)
     return result, removed

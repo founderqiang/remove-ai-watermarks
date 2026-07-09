@@ -895,8 +895,7 @@ def _strip_jpeg_metadata_lossless(source_path: Path, output_path: Path) -> bool:
     i, n = 2, len(data)
     while i + 1 < n:
         if data[i] != 0xFF:
-            out += data[i:]  # malformed stream: copy the remainder verbatim
-            break
+            return False  # malformed marker boundary: defer to the PIL re-encode fallback
         marker = data[i + 1]
         if marker in (0xDA, 0xD9):  # SOS / EOI -> the coded scan follows; copy verbatim
             out += data[i:]
@@ -906,13 +905,11 @@ def _strip_jpeg_metadata_lossless(source_path: Path, output_path: Path) -> bool:
             i += 2
             continue
         if i + 4 > n:
-            out += data[i:]
-            break
+            return False  # truncated segment header: defer to the PIL re-encode fallback
         seg_len = int.from_bytes(data[i + 2 : i + 4], "big")
         seg_end = i + 2 + seg_len
         if seg_len < 2 or seg_end > n:
-            out += data[i:]
-            break
+            return False  # malformed segment length: defer to the PIL re-encode fallback
         if not _jpeg_app_carries_ai(marker, data[i + 4 : seg_end]):
             out += data[i:seg_end]
         i = seg_end
@@ -998,8 +995,14 @@ def remove_ai_metadata(
     # re-encoded. The PIL open+save path below is lossy for JPEG (a q95 re-encode that
     # would undo the quality-preserving writes of the removal pipelines); this keeps a
     # JPEG bit-identical outside its APP metadata segments. Falls through on a
-    # non-parseable JPEG.
-    if output_path.suffix.lower() in (".jpg", ".jpeg") and _strip_jpeg_metadata_lossless(source_path, output_path):
+    # non-parseable JPEG. Only when keep_standard: the lossless walk drops AI segments
+    # but preserves standard ones, so a keep_standard=False caller (strip EVERYTHING)
+    # must use the full re-encode path below instead.
+    if (
+        keep_standard
+        and output_path.suffix.lower() in (".jpg", ".jpeg")
+        and _strip_jpeg_metadata_lossless(source_path, output_path)
+    ):
         return output_path
 
     # Read image and filter metadata

@@ -103,3 +103,26 @@ class TestVisibleProvenance:
 
     def test_unreadable_path_is_empty(self, tmp_path):
         assert raiw.visible_provenance(tmp_path / "missing.png") == frozenset()
+
+
+class TestRemoveVisibleOutputPath:
+    """Output-path robustness: in-place clean (#3) and a missing output dir (#4)."""
+
+    def _write_clean(self, p: Path) -> None:
+        from remove_ai_watermarks import image_io
+
+        image_io.imwrite(str(p), np.full((128, 128, 3), 200, np.uint8))
+
+    def test_inplace_clean_no_crash(self, tmp_path: Path):
+        p = tmp_path / "clean.png"
+        self._write_clean(p)
+        _, removed = raiw.remove_visible(str(p), str(p), backend="cv2")
+        assert removed == []
+        assert p.exists()
+
+    def test_creates_missing_output_dir(self, tmp_path: Path):
+        src = tmp_path / "in.png"
+        self._write_clean(src)
+        out = tmp_path / "sub" / "out.png"
+        raiw.remove_visible(str(src), str(out), backend="cv2")
+        assert out.exists()
