@@ -40,9 +40,9 @@ def _compose_textmark(engine, bg: float = 120.0, w: int = 1024, h: int = 1024):
 
 
 class TestResolveBackend:
-    def test_auto_resolves_to_installed_backend(self) -> None:
-        # auto picks the preferred installed model (MI-GAN) or cv2; either is fine.
-        assert registry.resolve_backend("auto") in {"cv2", "migan"}
+    def test_auto_resolves_to_available_backend(self) -> None:
+        # auto picks the best available model (LaMa > MI-GAN) or cv2; any is fine.
+        assert registry.resolve_backend("auto") in {"cv2", "migan", "lama"}
 
     def test_cv2_passthrough(self) -> None:
         assert registry.resolve_backend("cv2") == "cv2"
@@ -103,19 +103,29 @@ class TestFillDispatch:
 
 
 class TestBackendSelection:
-    """MI-GAN is the preferred inpaint backend (light, droplet-friendly); big-LaMa
-    is NOT auto-selected. cv2 is the floor when no ONNX model is present."""
+    """auto resolves to the best available inpaint backend: LaMa > MI-GAN > cv2.
+    cv2 is the floor when no learned ONNX model is present (and warns once)."""
 
-    def test_prefers_migan_when_available(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_prefers_lama_when_available(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from remove_ai_watermarks import region_eraser
 
+        monkeypatch.setattr(region_eraser, "lama_available", lambda: True)
+        monkeypatch.setattr(region_eraser, "migan_available", lambda: True)
+        assert registry.preferred_inpaint_backend() == "lama"
+
+    def test_migan_when_only_migan(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from remove_ai_watermarks import region_eraser
+
+        monkeypatch.setattr(region_eraser, "lama_available", lambda: False)
         monkeypatch.setattr(region_eraser, "migan_available", lambda: True)
         assert registry.preferred_inpaint_backend() == "migan"
 
     def test_cv2_when_no_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from remove_ai_watermarks import region_eraser
 
+        monkeypatch.setattr(region_eraser, "lama_available", lambda: False)
         monkeypatch.setattr(region_eraser, "migan_available", lambda: False)
+        monkeypatch.setattr(registry, "_warned_cv2_fallback", True)
         assert registry.preferred_inpaint_backend() == "cv2"
 
     def test_inpaint_model_available_reflects_either(self, monkeypatch: pytest.MonkeyPatch) -> None:

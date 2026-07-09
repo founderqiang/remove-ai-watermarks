@@ -51,12 +51,25 @@ class TestScan:
 
 
 class TestBackendResolution:
-    def test_auto_resolves_to_installed_backend(self):
-        assert reg.resolve_backend("auto") in ("cv2", "migan")
+    def test_auto_resolves_to_available_backend(self):
+        assert reg.resolve_backend("auto") in ("cv2", "migan", "lama")
 
     def test_explicit_backend_passes_through(self):
         assert reg.resolve_backend("cv2") == "cv2"
         assert reg.resolve_backend("lama") == "lama"
+
+    def test_cv2_fallback_warns_once(self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+        import logging
+
+        from remove_ai_watermarks import region_eraser
+
+        monkeypatch.setattr(region_eraser, "lama_available", lambda: False)
+        monkeypatch.setattr(region_eraser, "migan_available", lambda: False)
+        monkeypatch.setattr(reg, "_warned_cv2_fallback", False)
+        with caplog.at_level(logging.WARNING):
+            assert reg.preferred_inpaint_backend() == "cv2"
+            assert reg.preferred_inpaint_backend() == "cv2"
+        assert sum("cv2 classical inpaint" in r.message for r in caplog.records) == 1
 
 
 class TestFill:

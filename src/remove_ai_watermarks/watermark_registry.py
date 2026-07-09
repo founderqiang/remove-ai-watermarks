@@ -26,6 +26,7 @@ Entries:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -34,11 +35,13 @@ if TYPE_CHECKING:
 
     from numpy.typing import NDArray
 
+logger = logging.getLogger(__name__)
+
 Region = tuple[int, int, int, int]
 
-# Fill backend for the shared removal path. ``auto`` resolves to the preferred
-# installed ONNX model (MI-GAN) or cv2 (see ``resolve_backend``); the others force
-# a specific backend (mirrors the ``erase`` command's ``--backend``).
+# Fill backend for the shared removal path. ``auto`` resolves best-first to the highest
+# quality installed model -- LaMa, else MI-GAN, else cv2 (see ``resolve_backend``); the
+# others force a specific backend (mirrors the ``erase`` command's ``--backend``).
 Backend = Literal["auto", "cv2", "migan", "lama"]
 
 # Detection sensitivity for the removal path -- how much to trust a borderline mark.
@@ -193,7 +196,7 @@ class KnownMark:
         """Remove this mark by localize -> fill; returns ``(result, region)`` where
         ``region`` is the removed mark's bbox, or None if nothing was removed.
 
-        ``backend`` picks the fill (``auto`` = MI-GAN if installed else cv2; or force
+        ``backend`` picks the fill (``auto`` = LaMa > MI-GAN > cv2, best available; or force
         ``cv2``/``migan``/``lama``). ``provenance`` relaxes the detector's trust gate
         when metadata already confirms the vendor. ``force`` removes at the mark's
         usual footprint even without a positive detection (the ``--no-detect`` path).
@@ -276,15 +279,36 @@ def inpaint_model_available() -> bool:
     return region_eraser.migan_available() or region_eraser.lama_available()
 
 
-def preferred_inpaint_backend() -> Literal["migan", "cv2"]:
-    """Backend used by the ``auto`` fill: MI-GAN (light, droplet-friendly, the
-    default) when its ONNX runtime is available, else cv2. big-LaMa is NOT auto-
-    selected -- it is a heavier explicit opt-in via ``--backend lama`` (both models
-    run on onnxruntime, so availability alone cannot express the user's intent; the
-    light model is the safe default)."""
+_warned_cv2_fallback = False
+
+
+def preferred_inpaint_backend() -> Literal["lama", "migan", "cv2"]:
+    """Backend the ``auto`` fill resolves to, best-first: LaMa > MI-GAN > cv2.
+
+    LaMa is the highest-quality inpaint (it recovers the textured/structured backgrounds
+    the classical fill smears), so ``auto`` prefers it whenever a learned backend can run
+    (onnxruntime present). MI-GAN is the lighter learned model; both currently share the
+    SAME onnxruntime availability check, so ``auto`` cannot tell them apart and always
+    prefers the better one -- a memory-tight deployment that cannot afford LaMa's ~4.7 GB
+    peak pins MI-GAN explicitly via ``--backend migan`` / ``backend="migan"`` (that is the
+    deployment's call, not the library's). cv2 is the classical no-deps floor and the last
+    resort: it smears textured/structured backgrounds, so a one-time quality warning fires
+    when ``auto`` falls back to it."""
     from remove_ai_watermarks import region_eraser
 
-    return "migan" if region_eraser.migan_available() else "cv2"
+    if region_eraser.lama_available():
+        return "lama"
+    if region_eraser.migan_available():
+        return "migan"
+    global _warned_cv2_fallback
+    if not _warned_cv2_fallback:
+        _warned_cv2_fallback = True
+        logger.warning(
+            "No learned-inpaint backend available (onnxruntime not installed); falling back "
+            "to the cv2 classical inpaint, which can smear textured or structured backgrounds. "
+            "Install the 'lama' (best) or 'migan' (lighter) extra for higher-quality fills."
+        )
+    return "cv2"
 
 
 def resolve_backend(backend: Backend) -> Literal["cv2", "migan", "lama"]:

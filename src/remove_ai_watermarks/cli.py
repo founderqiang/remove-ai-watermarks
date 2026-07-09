@@ -296,10 +296,10 @@ _visible_backend_option = click.option(
     "backend",
     type=click.Choice(["auto", "cv2", "migan", "lama"]),
     default="auto",
-    help="Fill backend for visible-mark removal (localize -> fill). auto: MI-GAN when "
-    "the 'migan' extra is installed, else cv2. cv2: classical inpaint (no deps). "
-    "migan: MI-GAN ONNX (light, needs 'migan'). lama: big-LaMa ONNX (best quality, "
-    "needs 'lama').",
+    help="Fill backend for visible-mark removal (localize -> fill). auto: best available, "
+    "LaMa > MI-GAN > cv2 (a learned backend needs the 'lama' or 'migan' extra; else cv2, "
+    "with a warning). cv2: classical inpaint (no deps, smears texture). migan: MI-GAN ONNX "
+    "(light, ~1 GB, the memory-tight pick). lama: big-LaMa ONNX (best quality, ~4.7 GB).",
 )
 
 
@@ -556,8 +556,8 @@ def cmd_visible(
 
     Finds a known mark in its usual place (Gemini sparkle / Doubao-Jimeng-Samsung
     text) via the watermark registry and removes it by LOCALIZING the mark to a mask
-    and filling that mask with the chosen ``--backend`` (auto: MI-GAN if the 'migan'
-    extra is installed, else cv2). ``--mark auto`` removes every detected mark in one
+    and filling that mask with the chosen ``--backend`` (auto: best available, LaMa >
+    MI-GAN > cv2). ``--mark auto`` removes every detected mark in one
     pass. For arbitrary logos/objects, use ``erase``.
     """
     from remove_ai_watermarks import watermark_registry as registry
