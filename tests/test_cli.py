@@ -172,7 +172,9 @@ class TestVisibleCommand:
         expected = sample_png.with_stem(sample_png.stem + "_clean")
         assert expected.exists()
 
-    def test_visible_no_inpaint(self, runner, sample_png, tmp_path):
+    def test_visible_backend_cv2(self, runner, sample_png, tmp_path):
+        # The old --inpaint/--no-inpaint flags are gone; the fill backend is picked
+        # with --backend (localize -> fill). cv2 needs no ONNX model.
         output = tmp_path / "clean.png"
         result = runner.invoke(
             main,
@@ -181,7 +183,8 @@ class TestVisibleCommand:
                 str(sample_png),
                 "-o",
                 str(output),
-                "--no-inpaint",
+                "--backend",
+                "cv2",
                 "--no-detect",
             ],
         )
@@ -863,3 +866,24 @@ class TestEraseCommand:
         assert result.exit_code != 0
         assert "onnxruntime" in result.output.lower()
         assert not output.exists()
+
+
+def test_visible_backend_runtime_error_exits_cleanly(runner, tmp_path, monkeypatch):
+    # A backend whose extra is missing raises RuntimeError in region_eraser.erase;
+    # the visible --mark auto path must surface it cleanly, not as a raw traceback (#9).
+    from pathlib import Path
+
+    from remove_ai_watermarks import region_eraser
+
+    doubao = Path(__file__).resolve().parent.parent / "data" / "samples" / "doubao-1.png"
+    if not doubao.exists():
+        pytest.skip("doubao sample not present")
+
+    def boom(*_a, **_k):
+        raise RuntimeError("MI-GAN backend requires onnxruntime. Install the extra: ...")
+
+    monkeypatch.setattr(region_eraser, "erase", boom)
+    out = tmp_path / "out.png"
+    result = runner.invoke(main, ["visible", str(doubao), "-o", str(out), "--backend", "migan"])
+    assert result.exit_code == 1
+    assert not isinstance(result.exception, RuntimeError), "RuntimeError leaked as a traceback"

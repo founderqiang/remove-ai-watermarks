@@ -1,9 +1,9 @@
 """Jimeng-basic 'AI生成' pill: a CAPTURE-LESS visible mark (issue #54).
 
 The Jimeng free-tier TC260 label is a rounded pill with 'AI生成' in the TOP-LEFT
-corner -- distinct from the reverse-alpha ``jimeng`` "★ 即梦AI" mark (bottom-right).
-No flat capture / alpha map exists for it, so it is removed by INPAINT, not
-reverse-alpha:
+corner -- distinct from the ``jimeng`` "★ 即梦AI" wordmark (bottom-right). It has no
+captured alpha map, so unlike the other marks it is detected purely by a synthetic
+silhouette; like every mark it is then removed by the shared localize -> fill:
 
   * Detect: edge-NCC of a font-rendered SILHOUETTE (``assets/jimeng_pill.png``,
     synthetic, data-safe -- see ``scripts/render_pill_silhouette.py``) against the
@@ -89,7 +89,7 @@ def _grad(gray: NDArray[Any]) -> NDArray[Any]:
 
 
 class PillEngine:
-    """Detect + inpaint-mask the top-left 'AI生成' pill (edge-NCC, no reverse-alpha)."""
+    """Detect + build the removal mask for the top-left 'AI生成' pill (edge-NCC of a synthetic silhouette)."""
 
     def _match(self, image: NDArray[Any]) -> tuple[float, tuple[int, int, int, int]] | None:
         sil = _load_silhouette()
@@ -98,7 +98,7 @@ class PillEngine:
         h, w = image.shape[:2]
         if h < 64 or w < 64:
             return None
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        gray = cv2.cvtColor(image_io.to_bgr(image), cv2.COLOR_BGR2GRAY)
         rh, rw = int(h * _ROI_H_FRAC), int(w * _ROI_W_FRAC)
         roi = gray[0:rh, 0:rw]
         tw = max(24, int(_WIDTH_FRAC * w))
@@ -138,7 +138,7 @@ class PillEngine:
             return 0.0
         x0, y0, x1, y1 = box
         crop = image[y0:y1, x0:x1]
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+        gray = cv2.cvtColor(image_io.to_bgr(crop), cv2.COLOR_BGR2GRAY)
         tw = 220
         gray = cv2.resize(gray, (tw, max(1, int(gray.shape[0] * tw / gray.shape[1])))).astype(np.float32)
         gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)

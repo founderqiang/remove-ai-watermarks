@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 import click
 
-from remove_ai_watermarks import __version__, watermark_registry
+from remove_ai_watermarks import __version__, image_io, watermark_registry
 from remove_ai_watermarks.noai.constants import SUPPORTED_FORMATS
 from remove_ai_watermarks.noai.watermark_profiles import (
     resolve_strength,
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 
-# --- plain-text output layer (replaces rich: no colors, no markup, no boxes) ---
+# ── plain-text output layer (replaces rich: no colors, no markup, no boxes) ──
 
 
 class _Table:
@@ -135,8 +135,6 @@ def _validate_image(path: Path) -> Path:
         console.print(f"Warning: {path.suffix} may not be supported (expected: {', '.join(SUPPORTED_FORMATS)})")
     return path
 
-
-_ALPHA_FORMATS = {".png", ".webp"}
 
 # Shared option decorator for commands that run the invisible-watermark pipeline.
 # Both cmd_invisible and cmd_all expose this flag; defining it once avoids
@@ -293,15 +291,28 @@ _force_option = click.option(
 )
 
 
-_visible_method_option = click.option(
-    "--method",
-    "removal_method",
-    type=click.Choice(["auto", "reverse-alpha", "inpaint"]),
+_visible_backend_option = click.option(
+    "--backend",
+    "backend",
+    type=click.Choice(["auto", "cv2", "migan", "lama"]),
     default="auto",
-    help="Visible-mark removal method. auto: reverse-alpha for capture marks (exact "
-    "pixels, lighter), inpaint for the capture-less pill. reverse-alpha recovers "
-    "pixels from a captured alpha map; inpaint erases the footprint (MI-GAN with the "
-    "'migan' extra, else cv2).",
+    help="Fill backend for visible-mark removal (localize -> fill). auto: best available, "
+    "LaMa > MI-GAN > cv2 (a learned backend needs the 'lama' or 'migan' extra; else cv2, "
+    "with a warning). cv2: classical inpaint (no deps, smears texture). migan: MI-GAN ONNX "
+    "(light, ~1 GB, the memory-tight pick). lama: big-LaMa ONNX (best quality, ~4.7 GB).",
+)
+
+
+_visible_sensitivity_option = click.option(
+    "--sensitivity",
+    "sensitivity",
+    type=click.Choice(["auto", "strict", "assume-ai"]),
+    default="auto",
+    help="How hard to trust a borderline mark. auto: relax a mark only when metadata "
+    "or a same-product sibling mark corroborates it (safe; clean images untouched). "
+    "strict: high-precision visual gate only, never relaxed. assume-ai: treat the "
+    "image as AI and relax every mark (best recall on metadata-stripped screenshots, "
+    "at the cost of a small fill on some clean corners).",
 )
 
 
@@ -339,55 +350,57 @@ def _warn_if_esrgan_unavailable(upscaler: str) -> None:
         console.print("  Note: --upscaler esrgan needs the 'esrgan' extra; falling back to Lanczos.")
 
 
-def _aigc_metadata_present(path: Path) -> bool:
-    """True when the file carries a China-AIGC (TC260) metadata label. Feeds the
-    weak-detector 'AI生成' pill gate (``remove_auto_marks`` → ``_keep_pill``): metadata
-    confirms Jimeng-class provenance but not pill presence, so the metadata-only arm
-    removes the pill ONLY on a flat, safe-to-inpaint footprint. The reliable
-    bottom-right wordmark is the other, unrestricted confirmation arm (and it survives
-    a metadata-STRIPPED upload)."""
-    with contextlib.suppress(Exception):
-        from remove_ai_watermarks import metadata
+def _visible_provenance(path: Path | None) -> frozenset[str]:
+    """Vendor keys local metadata confirms, the EVIDENCE that drives ``auto``
+    sensitivity. Thin wrapper over the public :func:`api.visible_provenance` (one
+    implementation for the CLI and the library), with a None-path guard."""
+    if path is None:
+        return frozenset()
+    from remove_ai_watermarks.api import visible_provenance
 
-        return bool(metadata.aigc_label(path))
-    return False
+    return visible_provenance(path)
 
 
 def _remove_visible_auto(
     image: NDArray[Any],
     *,
     source_path: Path | None = None,
-    removal_method: str = "auto",
-    inpaint: bool = True,
-    inpaint_method: str = "ns",
-    inpaint_strength: float = 0.85,
+    backend: str = "auto",
+    sensitivity: str = "auto",
 ) -> tuple[NDArray[Any], str | None]:
-    """Remove the strongest auto-detected visible mark via the registry.
+    """Remove every auto-detected visible mark via the registry (localize -> fill).
 
     Routes the ``all``/``batch`` visible step through the same registry path the
     standalone ``visible`` command uses, so EVERY registered mark is handled (the
     Gemini sparkle AND the Doubao/Jimeng/Samsung text marks), not just the sparkle.
     Returns ``(result, label-or-None)``; when no ``in_auto`` mark fires the image is
-    returned unchanged with ``None``. ``removal_method`` selects reverse-alpha vs the
-    inpaint fallback (see ``KnownMark.remove``); ``inpaint*`` tune the Gemini
-    edge-residual cleanup only (the text engines ignore them).
-    """
+    returned unchanged with ``None``. ``backend`` selects the shared fill; ``sensitivity``
+    controls how hard a borderline mark is trusted (auto reads metadata provenance)."""
     from remove_ai_watermarks import watermark_registry
 
-    rmethod: watermark_registry.RemovalMethod = removal_method  # type: ignore[assignment]
-    method: Literal["telea", "ns"] = "ns" if inpaint_method == "ns" else "telea"
-    pill_md = _aigc_metadata_present(source_path) if source_path is not None else False
-    result, removed = watermark_registry.remove_auto_marks(
-        image,
-        pill_metadata=pill_md,
-        method=rmethod,
-        inpaint_method=method,
-        inpaint=inpaint,
-        inpaint_strength=inpaint_strength,
-    )
+    bk: watermark_registry.Backend = backend  # type: ignore[assignment]
+    sens = _parse_sensitivity(sensitivity)
+    provenance = _visible_provenance(source_path)
+    try:
+        result, removed = watermark_registry.remove_auto_marks(
+            image, sensitivity=sens, provenance=provenance, backend=bk
+        )
+    except RuntimeError as e:  # e.g. a selected migan/lama backend whose extra is absent
+        console.print(f"  Error: {e}")
+        raise SystemExit(1) from e
     if not removed:
         return image, None
     return result, ", ".join(removed)
+
+
+def _parse_sensitivity(value: str) -> watermark_registry.Sensitivity:
+    """Map the CLI ``--sensitivity`` choice (kebab ``assume-ai``) to the registry
+    literal (``assume_ai``); ``auto``/``strict`` pass through unchanged."""
+    if value == "assume-ai":
+        return "assume_ai"
+    if value == "strict":
+        return "strict"
+    return "auto"
 
 
 # Exit code for the standalone ``visible`` command when no visible mark was
@@ -397,7 +410,7 @@ def _remove_visible_auto(
 EXIT_NO_VISIBLE_MARK = 2
 
 
-def _no_visible_mark_exit(source: Path) -> NoReturn:
+def _no_visible_mark_exit(source: Path, *, sensitivity: str = "auto") -> NoReturn:
     """Explain why no visible watermark was removed, then exit non-zero.
 
     The visible registry handles only known visual marks (the Gemini sparkle and
@@ -408,7 +421,10 @@ def _no_visible_mark_exit(source: Path) -> NoReturn:
     watermarked image -- the recurring "it didn't work" report. Instead, run a
     cheap metadata-only :func:`identify`, tell the user what the image actually
     carries and which command removes it, and exit
-    :data:`EXIT_NO_VISIBLE_MARK`.
+    :data:`EXIT_NO_VISIBLE_MARK`. When the conservative detector found nothing and
+    the user has NOT already asked for the aggressive pass, point them at
+    ``--sensitivity assume-ai`` (a faint or moved visible mark may be sitting just
+    below the default gate).
     """
     from remove_ai_watermarks.identify import identify
 
@@ -429,6 +445,12 @@ def _no_visible_mark_exit(source: Path) -> NoReturn:
             f"    remove-ai-watermarks all {source.name}\n"
             "  If instead there is a logo or object to remove, target it with the region eraser:\n"
             f"    remove-ai-watermarks erase {source.name} --region x,y,w,h"
+        )
+    if sensitivity != "assume_ai":
+        console.print(
+            "  If you know this image is AI-generated, retry the visible pass with\n"
+            f"    remove-ai-watermarks visible {source.name} --sensitivity assume-ai\n"
+            "  which relaxes detection to catch a faint or moved mark the default gate skips."
         )
     raise SystemExit(EXIT_NO_VISIBLE_MARK)
 
@@ -482,56 +504,7 @@ def _should_skip_invisible_scrub(force: bool, image_path: Path) -> bool:
     return not has_invisible_target(image_path)
 
 
-def _read_bgr_and_alpha(path: Path) -> tuple[NDArray[Any] | None, NDArray[Any] | None]:
-    """Read an image preserving its alpha channel separately.
-
-    Returns ``(bgr, alpha)`` where ``alpha`` is a single-channel ndarray when the
-    source has transparency, else ``None``. Greyscale inputs are promoted to BGR.
-    Returns ``(None, None)`` if the image cannot be decoded.
-    """
-    import cv2
-
-    from remove_ai_watermarks import image_io
-
-    image = image_io.imread(path, cv2.IMREAD_UNCHANGED)
-    if image is None:
-        return None, None
-    if image.ndim == 2:
-        return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR), None
-    if image.shape[2] == 4:
-        return image[:, :, :3].copy(), image[:, :, 3].copy()
-    return image, None
-
-
-def _write_bgr_with_alpha(
-    path: Path,
-    bgr: NDArray[Any],
-    alpha: NDArray[Any] | None,
-) -> None:
-    """Write BGR (with optional alpha) to ``path``.
-
-    When ``alpha`` is provided and the output extension supports it, the original
-    alpha plane is rejoined unchanged. The watermark region is NOT made
-    transparent: reverse-alpha (and inpaint) recover real pixels there, so
-    zeroing alpha would punch a transparent hole that renders as a white box on
-    any non-transparent viewer (issue #30). Preserving the input alpha keeps
-    genuinely transparent backgrounds intact without inventing new holes.
-    """
-    import numpy as np
-
-    from remove_ai_watermarks import image_io
-
-    if alpha is None or path.suffix.lower() not in _ALPHA_FORMATS:
-        image_io.imwrite(path, bgr)
-        return
-
-    bgra = np.dstack([bgr, alpha])
-    image_io.imwrite(path, bgra)
-
-
-# -- Main group -------------------------------------------------------
-
-
+# ── Main group ──
 @click.group(invoke_without_command=True)
 @click.version_option(__version__, prog_name="remove-ai-watermarks")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging.")
@@ -551,50 +524,41 @@ def main(ctx: click.Context, verbose: bool) -> None:
         click.echo(ctx.get_help())
 
 
-# -- Visible (Gemini) watermark removal -------------------------------
-
-
+# ── Visible (Gemini) watermark removal ──
 @main.command("visible")
 @click.argument("source", type=click.Path(exists=True, path_type=Path))
 @click.option(
     "-o", "--output", type=click.Path(path_type=Path), default=None, help="Output path (default: <source>_clean.<ext>)."
 )
-@click.option("--inpaint/--no-inpaint", default=True, help="Apply inpainting cleanup after removal.")
-@click.option(
-    "--inpaint-method", type=click.Choice(["ns", "telea", "gaussian"]), default="ns", help="Inpainting method."
-)
-@click.option("--inpaint-strength", type=float, default=0.85, help="Inpainting blend strength (0.0-1.0).")
 @click.option("--detect/--no-detect", default=True, help="Detect watermark before removal.")
 @click.option(
     "--mark",
     type=click.Choice(["auto", *watermark_registry.mark_keys()]),
     default="auto",
-    help="Which known visible mark to target (auto picks the strongest detected). "
-    "Removal method is chosen by --method (default auto).",
+    help="Which known visible mark to target (auto picks every detected mark). "
+    "The fill backend is chosen by --backend (default auto).",
 )
-@_visible_method_option
+@_visible_backend_option
+@_visible_sensitivity_option
 @click.option("--strip-metadata/--keep-metadata", default=True, help="Strip AI metadata from output.")
 @click.pass_context
 def cmd_visible(
     ctx: click.Context,
     source: Path,
     output: Path | None,
-    inpaint: bool,
-    inpaint_method: Literal["ns", "telea", "gaussian"],
-    inpaint_strength: float,
     detect: bool,
     mark: str,
-    removal_method: str,
+    backend: str,
+    sensitivity: str,
     strip_metadata: bool,
 ) -> None:
     """Remove a known visible AI watermark from an image.
 
-    Finds a known mark in its usual place (Gemini sparkle / Doubao text) via the
-    watermark registry and removes it. Default ``--method auto`` recovers the true
-    pixels by exact reverse-alpha for the capture marks, and inpaints only the
-    capture-less "AI生成" pill (MI-GAN with the ``migan`` extra, else cv2).
-    ``--mark auto`` picks the strongest detected mark. For arbitrary logos/objects,
-    use ``erase``.
+    Finds a known mark in its usual place (Gemini sparkle / Doubao-Jimeng-Samsung
+    text) via the watermark registry and removes it by LOCALIZING the mark to a mask
+    and filling that mask with the chosen ``--backend`` (auto: best available, LaMa >
+    MI-GAN > cv2). ``--mark auto`` removes every detected mark in one
+    pass. For arbitrary logos/objects, use ``erase``.
     """
     from remove_ai_watermarks import watermark_registry as registry
 
@@ -604,67 +568,79 @@ def cmd_visible(
     if output is None:
         output = source.with_stem(source.stem + "_clean")
 
-    # Load image (preserving any alpha channel separately)
-    image, alpha = _read_bgr_and_alpha(source)
+    bk: registry.Backend = backend  # type: ignore[assignment]
+    sens = _parse_sensitivity(sensitivity)
+    resolved_backend = registry.resolve_backend(bk)
+    if resolved_backend == "cv2" and not registry.inpaint_model_available():
+        console.print("  Note: using cv2 fill (install the 'migan' extra for a lightweight ONNX model).")
+
+    # ``auto`` removes EVERY detected in_auto mark in one pass (a Jimeng-basic image
+    # carries the top-left pill AND the bottom-right wordmark). Delegate the whole
+    # read -> provenance -> localize/fill -> write -> metadata-strip to the library
+    # entry point, so the CLI and the library go through ONE path (no drift).
+    if mark == "auto" and detect:
+        from remove_ai_watermarks import api
+
+        t0 = time.monotonic()
+        try:
+            with console.status("Detecting & removing visible marks..."):
+                result, removed = api.remove_visible(
+                    str(source),
+                    str(output),
+                    sensitivity=sens,
+                    backend=bk,
+                    strip_metadata=strip_metadata,
+                    write_noop=False,
+                )
+        except RuntimeError as e:  # e.g. a selected migan/lama backend whose extra is absent
+            console.print(f"  Error: {e}")
+            raise SystemExit(1) from e
+        elapsed = time.monotonic() - t0
+        h, w = result.shape[:2]
+        console.print(f"  Input:  {source.name}  ({w}x{h})")
+        if not removed:
+            # write_noop=False means nothing was written, so a pre-existing file at the
+            # output path is left intact (the no-mark contract writes nothing).
+            console.print("  No known visible mark detected (gemini / doubao / jimeng / jimeng-pill / samsung).")
+            _no_visible_mark_exit(source, sensitivity=sens)
+        console.print(f"  Removed: {', '.join(removed)}")
+        size_kb = output.stat().st_size / 1024
+        console.print(f"  Saved: {output}  ({size_kb:.0f} KB, {elapsed:.2f}s)")
+        return
+
+    # Explicit single mark (or --no-detect): needs the decoded array + the per-mark gate,
+    # so it keeps its own read/remove/write (still through the shared io + registry).
+    image, alpha = image_io.read_bgr_and_alpha(source)
     if image is None:
         console.print(f"Error: Failed to read image: {source}")
         raise SystemExit(1)
-
     h, w = image.shape[:2]
     console.print(f"  Input:  {source.name}  ({w}x{h})")
+    provenance = _visible_provenance(source)
+    target = "gemini" if mark == "auto" else mark  # --no-detect auto: gemini fallback
+    chosen = registry.get_mark(target)
+    # A single explicit mark has no cross-mark pass (no sibling corroboration), so use the
+    # canonical arbiter policy with an empty strict-sibling set instead of re-deriving it
+    # inline (keeps this in lockstep with `decide`).
+    prov = registry.resolve_relax(chosen.key, sensitivity=sens, provenance=provenance, strict_keys=set())
+    det = chosen.detect(image, provenance=prov)
+    if detect and not det.detected:
+        console.print(f"  {chosen.label} not detected  (conf {det.confidence:.2f}). Use --no-detect to force.")
+        _no_visible_mark_exit(source, sensitivity=sens)
+    if det.detected:
+        console.print(f"  {chosen.label} detected  ({chosen.location}, conf {det.confidence:.2f})")
+    t0 = time.monotonic()
+    try:
+        with console.status(f"Removing {chosen.label}... ({resolved_backend})"):
+            result, _ = chosen.remove(image, backend=bk, provenance=prov, force=not detect)
+    except RuntimeError as e:  # e.g. a selected migan/lama backend whose extra is absent
+        console.print(f"  Error: {e}")
+        raise SystemExit(1) from e
+    elapsed = time.monotonic() - t0
 
-    method: Literal["telea", "ns"] = "ns" if inpaint_method == "ns" else "telea"
-
-    # ``auto`` removes EVERY detected in_auto mark in one pass (a Jimeng-basic image
-    # carries the top-left pill AND the bottom-right wordmark); an explicit
-    # ``--mark <key>`` targets that one (the user asserts its presence).
-    if mark == "auto" and detect:
-        t0 = time.monotonic()
-        with console.status("Detecting & removing visible marks..."):
-            result, removed = registry.remove_auto_marks(
-                image,
-                pill_metadata=_aigc_metadata_present(source),
-                method=removal_method,  # type: ignore[arg-type]
-                inpaint_method=method,
-                inpaint=inpaint,
-                inpaint_strength=inpaint_strength,
-            )
-        elapsed = time.monotonic() - t0
-        if not removed:
-            console.print("  No known visible mark detected (gemini / doubao / jimeng / jimeng-pill / samsung).")
-            _no_visible_mark_exit(source)
-        console.print(f"  Removed: {', '.join(removed)}")
-    else:
-        target = "gemini" if mark == "auto" else mark  # --no-detect auto: gemini fallback
-        chosen = registry.get_mark(target)
-        det = chosen.detect(image)
-        if detect and not det.detected:
-            console.print(f"  {chosen.label} not detected  (conf {det.confidence:.2f}). Use --no-detect to force.")
-            _no_visible_mark_exit(source)
-        if det.detected:
-            console.print(f"  {chosen.label} detected  ({chosen.location}, conf {det.confidence:.2f})")
-        resolved = registry.resolve_removal_method(removal_method, chosen.has_capture)  # type: ignore[arg-type]
-        if resolved == "inpaint" and not registry.inpaint_model_available():
-            console.print(
-                "  Note: --method inpaint using cv2 (install the 'migan' extra for a lightweight ONNX model)."
-            )
-        t0 = time.monotonic()
-        with console.status(f"Removing {chosen.label}... ({resolved})"):
-            result, _ = chosen.remove(
-                image,
-                method=removal_method,  # type: ignore[arg-type]
-                inpaint_method=method,
-                inpaint=inpaint,
-                inpaint_strength=inpaint_strength,
-                force=not detect,
-            )
-        elapsed = time.monotonic() - t0
-
-    # Save (rejoins the original alpha plane unchanged)
+    # Save (rejoins the original alpha plane unchanged) + strip metadata.
     output.parent.mkdir(parents=True, exist_ok=True)
-    _write_bgr_with_alpha(output, result, alpha)
-
-    # Strip metadata
+    image_io.write_bgr_with_alpha(output, result, alpha)
     if strip_metadata:
         try:
             from remove_ai_watermarks.metadata import remove_ai_metadata
@@ -678,9 +654,7 @@ def cmd_visible(
     console.print(f"  Saved: {output}  ({size_kb:.0f} KB, {elapsed:.2f}s)")
 
 
-# -- Universal region eraser -----------------------------------------
-
-
+# ── Universal region eraser ──
 def _parse_region(spec: str) -> tuple[int, int, int, int]:
     """Parse an ``x,y,w,h`` region string into a 4-int tuple."""
     parts = spec.replace(" ", "").split(",")
@@ -725,7 +699,7 @@ def cmd_erase(
     """Erase arbitrary region(s) from an image via inpainting.
 
     Universal and position-agnostic: removes any logo / watermark / object inside
-    the boxes you pass, regardless of colour or location. Runs on CPU. Use this
+    the boxes you pass, regardless of color or location. Runs on CPU. Use this
     for marks the dedicated ``visible`` engines (Gemini, Doubao) do not cover.
     """
     from remove_ai_watermarks.region_eraser import erase
@@ -737,7 +711,7 @@ def cmd_erase(
 
     boxes = [_parse_region(r) for r in regions]
 
-    image, alpha = _read_bgr_and_alpha(source)
+    image, alpha = image_io.read_bgr_and_alpha(source)
     if image is None:
         console.print(f"Error: Failed to read image: {source}")
         raise SystemExit(1)
@@ -755,7 +729,7 @@ def cmd_erase(
     elapsed = time.monotonic() - t0
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    _write_bgr_with_alpha(output, result, alpha)
+    image_io.write_bgr_with_alpha(output, result, alpha)
 
     if strip_metadata:
         try:
@@ -770,9 +744,7 @@ def cmd_erase(
     console.print(f"  Erased {len(boxes)} region(s) -> {output}  ({size_kb:.0f} KB, {elapsed:.2f}s)")
 
 
-# -- Invisible watermark removal -------------------------------------
-
-
+# ── Invisible watermark removal ──
 @main.command("invisible")
 @click.argument("source", type=click.Path(exists=True, path_type=Path))
 @click.option(
@@ -908,9 +880,7 @@ def cmd_invisible(
     console.print(f"\n  Saved: {result_path}  ({size_kb:.0f} KB, {elapsed:.1f}s)")
 
 
-# -- Metadata operations ---------------------------------------------
-
-
+# ── Metadata operations ──
 @main.command("metadata")
 @click.argument("source", type=click.Path(exists=True, path_type=Path))
 @click.option("--check", is_flag=True, help="Check for AI metadata (don't modify).")
@@ -967,9 +937,7 @@ def cmd_metadata(
     console.print(f"  AI metadata stripped -> {out}")
 
 
-# -- Provenance identification ---------------------------------------
-
-
+# ── Provenance identification ──
 @main.command("identify")
 @click.argument("source", type=click.Path(exists=True, path_type=Path))
 @click.option(
@@ -1038,19 +1006,14 @@ def cmd_identify(ctx: click.Context, source: Path, no_visible: bool, as_json: bo
             console.print(f"  - {c}")
 
 
-# -- Combined "all" mode ----------------------------------------------
-
-
+# ── Combined "all" mode ──
 @main.command("all")
 @click.argument("source", type=click.Path(exists=True, path_type=Path))
 @click.option(
     "-o", "--output", type=click.Path(path_type=Path), default=None, help="Output path (default: <source>_clean.<ext>)."
 )
-@click.option("--inpaint/--no-inpaint", default=True, help="Apply inpainting cleanup after visible removal.")
-@click.option(
-    "--inpaint-method", type=click.Choice(["ns", "telea", "gaussian"]), default="ns", help="Inpainting method."
-)
-@_visible_method_option
+@_visible_backend_option
+@_visible_sensitivity_option
 @_strength_option
 @click.option("--steps", type=int, default=50, help="Number of denoising steps for invisible removal.")
 @_pipeline_option
@@ -1086,9 +1049,8 @@ def cmd_all(
     ctx: click.Context,
     source: Path,
     output: Path | None,
-    inpaint: bool,
-    inpaint_method: Literal["ns", "telea", "gaussian"],
-    removal_method: str,
+    backend: str,
+    sensitivity: str,
     strength: float | None,
     steps: int,
     pipeline: str,
@@ -1113,7 +1075,7 @@ def cmd_all(
     """Remove ALL watermarks: visible + invisible + metadata.
 
     Runs the full pipeline in order:
-      1. Visible watermark removal (Gemini sparkle, reverse alpha blending)
+      1. Visible watermark removal (Gemini sparkle / text marks, localize -> fill)
       2. Invisible watermark removal (SynthID etc., diffusion regeneration)
       3. AI metadata stripping (EXIF, PNG text, C2PA)
 
@@ -1147,9 +1109,9 @@ def cmd_all(
 
         os.close(tmp_fd)
 
-        # -- Step 1: Visible watermark --------------------------------
+        # ── Step 1: Visible watermark ──
         console.print("\n  1) Visible watermark removal")
-        image, alpha = _read_bgr_and_alpha(source)
+        image, alpha = image_io.read_bgr_and_alpha(source)
         if image is None:
             console.print(f"Error: Failed to read image: {source}")
             raise SystemExit(1)
@@ -1159,7 +1121,7 @@ def cmd_all(
 
         with console.status("Removing visible watermark..."):
             result, removed_label = _remove_visible_auto(
-                image, source_path=source, removal_method=removal_method, inpaint=inpaint, inpaint_method=inpaint_method
+                image, source_path=source, backend=backend, sensitivity=sensitivity
             )
             if removed_label is not None:
                 console.print(f"    Visible watermark removed ({removed_label})")
@@ -1167,9 +1129,9 @@ def cmd_all(
                 console.print("    Skipped (no visible watermark detected)")
 
         # Save to temp file for invisible engine input (preserve alpha if present)
-        _write_bgr_with_alpha(tmp_path, result, alpha)
+        image_io.write_bgr_with_alpha(tmp_path, result, alpha)
 
-        # -- Step 2: Invisible watermark ------------------------------
+        # ── Step 2: Invisible watermark ──
         console.print("\n  2) Invisible watermark removal")
         from remove_ai_watermarks.invisible_engine import is_available as invisible_available
 
@@ -1233,7 +1195,7 @@ def cmd_all(
             )
             console.print("    Invisible watermark removed")
 
-        # -- Step 3: Metadata -----------------------------------------
+        # ── Step 3: Metadata ──
         console.print("\n  3) AI metadata stripping")
         try:
             from remove_ai_watermarks.metadata import remove_ai_metadata
@@ -1243,23 +1205,23 @@ def cmd_all(
         except Exception as e:
             console.print(f"    Warning: Metadata strip failed: {e}")
 
-        # -- Write final result ----------------------------------------
+        # ── Write final result ──
         # The invisible step (and downstream cv2.IMREAD_COLOR paths) drops alpha,
         # so re-attach the original alpha plane unchanged when writing the final
         # output for transparent formats.
         output.parent.mkdir(parents=True, exist_ok=True)
-        final_bgr, _ = _read_bgr_and_alpha(tmp_path)
+        final_bgr, _ = image_io.read_bgr_and_alpha(tmp_path)
         if final_bgr is None:
             console.print(f"Error: Failed to read intermediate file: {tmp_path}")
             raise SystemExit(1)
-        _write_bgr_with_alpha(output, final_bgr, alpha)
+        image_io.write_bgr_with_alpha(output, final_bgr, alpha)
 
     finally:
         # Clean up temp file if it still exists
         if tmp_path.exists():
             tmp_path.unlink()
 
-    # -- Done -----------------------------------------------------
+    # ── Done ──
     elapsed = time.monotonic() - t0
     size_kb = output.stat().st_size / 1024
     console.print(f"\n  Done: {output}  ({size_kb:.0f} KB, {elapsed:.1f}s total)")
@@ -1283,15 +1245,12 @@ def cmd_all(
         raise SystemExit(1)
 
 
-# -- Batch command ----------------------------------------------------
-
-
+# ── Batch command ──
 def _process_batch_image(
     ctx: click.Context,
     img_path: Path,
     out_path: Path,
     mode: str,
-    inpaint: bool,
     strength: float | None,
     steps: int,
     pipeline: str,
@@ -1299,7 +1258,8 @@ def _process_batch_image(
     seed: int | None,
     hf_token: str | None,
     humanize: float,
-    removal_method: str = "auto",
+    backend: str = "auto",
+    sensitivity: str = "auto",
     unsharp: float = 0.0,
     max_resolution: int = 0,
     min_resolution: int = 1024,
@@ -1328,13 +1288,13 @@ def _process_batch_image(
         # stale out_path from a previous run must not be re-processed as if it were
         # the input. (The invisible step below reads out_path for `all` -- that chain
         # is within a single run.)
-        image, alpha = _read_bgr_and_alpha(img_path)
+        image, alpha = image_io.read_bgr_and_alpha(img_path)
         if image is None:
             raise ValueError("Failed to read image")
 
-        result, _ = _remove_visible_auto(image, source_path=img_path, removal_method=removal_method, inpaint=inpaint)
+        result, _ = _remove_visible_auto(image, source_path=img_path, backend=backend, sensitivity=sensitivity)
 
-        _write_bgr_with_alpha(out_path, result, alpha)
+        image_io.write_bgr_with_alpha(out_path, result, alpha)
         saved_alpha = alpha
 
     if mode in ("invisible", "all"):
@@ -1385,9 +1345,9 @@ def _process_batch_image(
             # No invisible target and the visible/all pass did not write out_path
             # (invisible mode): copy the input through so the output dir is complete
             # with the pixels deliberately left intact.
-            src_bgr, src_alpha = _read_bgr_and_alpha(img_path)
+            src_bgr, src_alpha = image_io.read_bgr_and_alpha(img_path)
             if src_bgr is not None:
-                _write_bgr_with_alpha(out_path, src_bgr, src_alpha)
+                image_io.write_bgr_with_alpha(out_path, src_bgr, src_alpha)
 
     if mode in ("metadata", "all"):
         from remove_ai_watermarks.metadata import remove_ai_metadata
@@ -1397,9 +1357,9 @@ def _process_batch_image(
     # In "all" mode, the invisible step (color-only OpenCV paths) drops alpha,
     # so re-attach the cached alpha when the input had transparency.
     if mode == "all" and saved_alpha is not None:
-        final_bgr, _ = _read_bgr_and_alpha(out_path)
+        final_bgr, _ = image_io.read_bgr_and_alpha(out_path)
         if final_bgr is not None:
-            _write_bgr_with_alpha(out_path, final_bgr, saved_alpha)
+            image_io.write_bgr_with_alpha(out_path, final_bgr, saved_alpha)
 
 
 @main.command("batch")
@@ -1416,8 +1376,8 @@ def _process_batch_image(
 )
 @_strength_option
 @click.option("--steps", type=int, default=50, help="Number of denoising steps (invisible mode).")
-@click.option("--inpaint/--no-inpaint", default=True, help="Apply inpainting (visible mode).")
-@_visible_method_option
+@_visible_backend_option
+@_visible_sensitivity_option
 @click.option(
     "--humanize", type=float, default=0.0, help="Analog Humanizer film grain intensity (0 = off, typical: 2.0-6.0)."
 )
@@ -1458,8 +1418,8 @@ def cmd_batch(
     device: str,
     seed: int | None,
     hf_token: str | None,
-    inpaint: bool,
-    removal_method: str,
+    backend: str,
+    sensitivity: str,
     humanize: float,
     unsharp: float,
     max_resolution: int,
@@ -1518,7 +1478,6 @@ def cmd_batch(
                     img_path=img_path,
                     out_path=out_path,
                     mode=mode,
-                    inpaint=inpaint,
                     strength=strength,
                     steps=steps,
                     pipeline=pipeline,
@@ -1526,7 +1485,8 @@ def cmd_batch(
                     seed=seed,
                     hf_token=hf_token,
                     humanize=humanize,
-                    removal_method=removal_method,
+                    backend=backend,
+                    sensitivity=sensitivity,
                     unsharp=unsharp,
                     max_resolution=max_resolution,
                     min_resolution=min_resolution,
