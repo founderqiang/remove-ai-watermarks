@@ -100,6 +100,13 @@ class C2paAiVendor(NamedTuple):
     # (usually a shorter form of org, e.g. "Google" for "Google LLC"); None when platform is.
     needle: str | None
     synthid: bool = False  # vendor pairs an invisible SynthID pixel watermark with its C2PA manifest
+    # The vendor's mere presence in the manifest asserts AI generation even without
+    # a digitalSourceType (``trainedAlgorithmicMedia``) assertion. Set ONLY for a
+    # pure-generator brand whose issuer/generator byte string is unambiguous (e.g.
+    # "Dreamina"). Do NOT set for common-word issuers (Adobe/Google/OpenAI/Microsoft):
+    # those appear incidentally in unrelated XMP/trust-chain bytes, so they stay
+    # source-type-gated in identify._attribute_platform.
+    asserts_ai: bool = False
 
 
 # C2PA known vendors, ORDERED for first-match-wins platform attribution: when a
@@ -149,6 +156,24 @@ C2PA_AI_VENDORS: tuple[C2paAiVendor, ...] = (
     # earlier row's label wins anyway -- they normalize together for clash
     # detection. Verified on real signed files in production traffic, 2026-06-19.
     C2paAiVendor(b"Byteplus", "BytePlus (ByteDance)", "ByteDance (Doubao / Jimeng / Volcano Engine)", "ByteDance"),
+    # Dreamina (ByteDance's international Jimeng brand) signs C2PA as "Bytedance
+    # Pte. Ltd." with a "Dreamina/x.y" claim generator and, unlike the Volcano
+    # Engine output, NO digitalSourceType assertion -- so the generator name is the
+    # only AI signal. It is registered by that generator token (which the caBX /
+    # store-JSON byte scan sees across active + ingredient manifests, where the
+    # active manifest is often a plain c2pa-tool transcode). ``asserts_ai`` lets the
+    # issuer alone flag AI without trainedAlgorithmicMedia; "Dreamina" is a
+    # distinctive brand string, so it does not risk the incidental-mention problem
+    # the common-word issuers have. Verified on real signed files in the retained
+    # corpus, 2026-07. Normalizes to the same "ByteDance" needle/platform as the
+    # volcengine row (they collapse together for clash detection).
+    C2paAiVendor(
+        b"Dreamina",
+        "ByteDance (Dreamina)",
+        "ByteDance (Doubao / Jimeng / Volcano Engine)",
+        "ByteDance",
+        asserts_ai=True,
+    ),
     # Canva Magic Media signs AI-generated images as "Canva" with a generic
     # c2pa-rs claim generator + trainedAlgorithmicMedia; without this entry the
     # source read AI but no platform was attributed. Verified on real signed files
@@ -180,6 +205,12 @@ C2PA_AI_VENDORS: tuple[C2paAiVendor, ...] = (
 # Derived view -- add a vendor to C2PA_AI_VENDORS above, not here.
 # C2PA issuer signature -> resolved org name, for the manifest byte-scan.
 C2PA_ISSUERS: dict[bytes, str] = {v.issuer: v.org for v in C2PA_AI_VENDORS}
+
+# Resolved org names of the vendors whose presence asserts AI generation on its
+# own (no digitalSourceType needed) -- see the ``asserts_ai`` field. identify uses
+# this to lift the AI verdict for an identity-AI issuer (e.g. Dreamina) that ships
+# no trainedAlgorithmicMedia. Derived from the flag -- set it on the vendor, not here.
+C2PA_IDENTITY_AI_ORGS: frozenset[str] = frozenset(v.org for v in C2PA_AI_VENDORS if v.asserts_ai)
 
 # C2PA issuers whose signed outputs also carry an invisible SynthID pixel
 # watermark -- a metadata proxy for "SynthID is in the pixels":

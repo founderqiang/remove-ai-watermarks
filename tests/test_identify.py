@@ -152,6 +152,18 @@ class TestIdentifyNonPng:
         assert r.is_ai_generated is True
         assert "ByteDance" in (r.platform or "")
 
+    def test_dreamina_attributed_without_source_type(self, tmp_path: Path):
+        # Dreamina (ByteDance's international Jimeng brand) signs C2PA as
+        # "Bytedance Pte. Ltd." with a "Dreamina/x.y" claim generator and NO
+        # digitalSourceType assertion -- the generator name is the only AI signal.
+        # It is an identity-AI vendor (a pure generator), so attribution must not
+        # depend on trainedAlgorithmicMedia the way the incidental-mention-prone
+        # common-word issuers (Adobe/Google/OpenAI) do.
+        path = self._c2pa_jpeg(tmp_path, b"Bytedance Pte. Ltd. Dreamina/7.5.0 c2pa.created")
+        r = identify(path, check_visible=False, check_invisible=False)
+        assert r.is_ai_generated is True
+        assert "ByteDance" in (r.platform or "")
+
     def test_elevenlabs_attributed(self, tmp_path: Path):
         path = self._c2pa_jpeg(tmp_path, b"Eleven Labs Inc. ... trainedAlgorithmicMedia")
         r = identify(path, check_visible=False, check_invisible=False)
@@ -686,6 +698,16 @@ class TestOpenAiCaveatVendorScoped:
         r = identify(png, check_visible=False, check_invisible=False)
         assert any("SynthID watermark, inferred from C2PA metadata (likely present (OpenAI" in w for w in r.watermarks)
         assert any("before the rollout" in c for c in r.caveats)
+
+    def test_dreamina_png_cabx_without_source_type(self, tmp_path: Path):
+        # Real Dreamina PNGs carry the "Dreamina/x.y" generator in an ingredient
+        # manifest (the active one is often a c2pa-tool transcode), so the caBX
+        # byte-scan -- which sees the whole store -- is the reliable detector, and
+        # there is no trainedAlgorithmicMedia to lean on.
+        png = self._png(tmp_path, "dreamina.png", self._png_chunk(b"caBX", b"jumbc2pa Dreamina/7.5.0 c2pa.created"))
+        r = identify(png, check_visible=False, check_invisible=False)
+        assert r.is_ai_generated is True
+        assert "ByteDance" in (r.platform or "")
 
 
 class TestReportSerializable:

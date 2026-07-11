@@ -41,7 +41,12 @@ from remove_ai_watermarks.metadata import (
     xai_signature,
 )
 from remove_ai_watermarks.noai.c2pa import cbor_text_after, extract_c2pa_info, soft_binding_vendors_in
-from remove_ai_watermarks.noai.constants import C2PA_AI_TOOLS, C2PA_AI_VENDORS, C2PA_ISSUERS
+from remove_ai_watermarks.noai.constants import (
+    C2PA_AI_TOOLS,
+    C2PA_AI_VENDORS,
+    C2PA_IDENTITY_AI_ORGS,
+    C2PA_ISSUERS,
+)
 from remove_ai_watermarks.watermark_registry import GEMINI_SPARKLE_TRUST_CONF
 
 if TYPE_CHECKING:
@@ -515,7 +520,14 @@ def identify(image_path: Path, *, check_visible: bool = True, check_invisible: b
             c2pa_source_kind = "generated"
         elif b"compositeWithTrainedAlgorithmicMedia" in head:
             c2pa_source_kind = "enhanced"
-    c2pa_is_ai = c2pa_source_kind is not None
+    # An identity-AI issuer (a pure-generator brand like Dreamina) asserts AI even
+    # without a digitalSourceType -- some ByteDance/Dreamina manifests ship no
+    # trainedAlgorithmicMedia, so the registered generator name is the only signal.
+    # Restricted to the ``asserts_ai`` vendors (distinctive brand strings), so it
+    # does not reopen the incidental-mention problem the common-word issuers have.
+    issuer_blob = " ".join(issuers)
+    c2pa_identity_ai = has_c2pa and any(org in issuer_blob for org in C2PA_IDENTITY_AI_ORGS)
+    c2pa_is_ai = c2pa_source_kind is not None or c2pa_identity_ai
     # Generator string (for the signal detail): structured for PNG, CBOR-scanned
     # for other containers. Best-effort -- some manifests key it as
     # `claim_generator_info` (Pixel), so this can be None even when a device is

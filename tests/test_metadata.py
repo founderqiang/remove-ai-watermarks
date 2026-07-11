@@ -849,6 +849,44 @@ class TestAIGCLabel:
     def test_has_ai_metadata_detects_png_chunk_form(self, tmp_path: Path):
         assert has_ai_metadata(self._aigc_chunk_png(tmp_path))
 
+    def _aigc_serviceprovider_png(self, tmp_path: Path, provider: str = "腾讯云") -> Path:
+        """Tencent Cloud's AIGC variant uses a service-provider schema
+        (``ServiceProvider`` / ``ServiceUser`` / ``Time`` / ``ContentId``) rather
+        than the producer schema, embedded in EXIF ``ImageDescription`` -- none of
+        its fields overlap the producer-side ``_TC260_FIELDS``, so the generic
+        ``"AIGC":{...}`` gate must recognize them too."""
+        import json
+
+        import piexif
+
+        p = tmp_path / "tencent_aigc.png"
+        payload = json.dumps(
+            {
+                "AIGC": {
+                    "ServiceProvider": provider,
+                    "ServiceUser": "1379431822",
+                    "Time": "2026-06-30 23:54:50.067",
+                    "ContentId": "a284dd3d-15ae-4cce-b2dd-010be84921df",
+                }
+            },
+            ensure_ascii=False,
+        )
+        exif = piexif.dump(
+            {"0th": {piexif.ImageIFD.ImageDescription: payload.encode("utf-8")}, "Exif": {}, "GPS": {}, "1st": {}}
+        )
+        Image.new("RGB", (32, 32)).save(p, exif=exif)
+        return p
+
+    def test_parses_serviceprovider_schema(self, tmp_path: Path):
+        from remove_ai_watermarks.metadata import aigc_label
+
+        info = aigc_label(self._aigc_serviceprovider_png(tmp_path))
+        assert info is not None
+        assert "ServiceProvider" in info
+
+    def test_has_ai_metadata_detects_serviceprovider_schema(self, tmp_path: Path):
+        assert has_ai_metadata(self._aigc_serviceprovider_png(tmp_path))
+
     def test_remove_strips_png_chunk_form(self, tmp_path: Path):
         from remove_ai_watermarks.metadata import aigc_label, remove_ai_metadata
 

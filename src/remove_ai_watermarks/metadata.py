@@ -137,6 +137,7 @@ AIGC_MARKERS: tuple[bytes, ...] = (
 # label even when the namespaced XMP element is absent.
 _TC260_FIELDS: frozenset[str] = frozenset(
     {
+        # Producer-side schema (Doubao and most China-served generators).
         "Label",
         "ContentProducer",
         "ProduceID",
@@ -144,6 +145,12 @@ _TC260_FIELDS: frozenset[str] = frozenset(
         "PropagateID",
         "ReservedCode1",
         "ReservedCode2",
+        # Service-provider schema (Tencent Cloud's AIGC variant, mined from the
+        # retained corpus 2026-07): the same ``{"AIGC":{...}}`` wrapper but keyed
+        # ``ServiceProvider`` / ``ServiceUser`` (+ generic ``Time`` / ``ContentId``,
+        # not gated on), embedded in EXIF ``ImageDescription``.
+        "ServiceProvider",
+        "ServiceUser",
     }
 )
 
