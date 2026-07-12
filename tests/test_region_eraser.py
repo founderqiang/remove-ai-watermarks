@@ -171,6 +171,7 @@ class TestMiganWrapper:
 
             def run(self, _outputs, feeds):
                 self.outer.captured["mask"] = feeds["mask"]
+                self.outer.captured["image_shape"] = feeds["image"].shape
                 img = feeds["image"]  # (1,3,H,W) RGB
                 red = np.zeros_like(img)
                 red[:, 0] = 255  # pure red in RGB
@@ -190,6 +191,21 @@ class TestMiganWrapper:
         m = self.captured["mask"][0, 0]
         assert m[50, 50] == 0
         assert m[10, 10] == 255
+
+    @pytest.mark.usefixtures("_fake_migan")
+    def test_crops_around_mask_so_onnx_input_is_bounded(self):
+        # Large frame, small corner mark: the tensor fed to MI-GAN is the padded
+        # CROP (pad = max(256, 2*bbox)), not the full image -- this is what holds the
+        # ONNX working set roughly constant on big uploads instead of scaling with
+        # the image (the memory fix). Untouched pixels stay exact; the mark is filled.
+        img = np.full((2000, 3000, 3), 120, np.uint8)
+        out = erase(img, boxes=[(2900, 1900, 60, 60)], backend="migan", dilate=0)
+        assert out.shape == img.shape
+        _, _, fh, fw = self.captured["image_shape"]
+        assert fh < 700  # crop height, not the 2000px frame
+        assert fw < 700  # crop width, not the 3000px frame
+        assert tuple(int(v) for v in out[1930, 2930]) == (0, 0, 255)  # mark -> red fill
+        assert np.array_equal(out[:100, :100], img[:100, :100])  # far corner untouched
 
     @pytest.mark.usefixtures("_fake_migan")
     def test_grayscale_2d_does_not_raise(self):

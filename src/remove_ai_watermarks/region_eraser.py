@@ -10,9 +10,12 @@ Backends:
   - ``cv2`` (default): ``cv2.inpaint`` (Telea / Navier-Stokes). Instant, no extra
     dependencies, lower quality on large or textured regions.
   - ``migan`` (optional, extra ``migan``): MI-GAN via onnxruntime
-    (``andraniksargsyan/migan``, MIT). CPU, ~28 MB model, ~700-950 MB peak RAM,
-    ~0.19 s/call -- the droplet-friendly tier: near-big-LaMa quality on small
-    marks at ~5x less RAM and ~8x faster. Model downloaded on first use.
+    (``andraniksargsyan/migan``, MIT). CPU, ~28 MB model, ~0.19 s/call -- the
+    droplet-friendly tier: near-big-LaMa quality on small marks. Model downloaded
+    on first use. Like ``lama`` it crops a padded region around the mask before
+    inference (at native resolution -- MI-GAN takes arbitrary dims), so peak RAM is
+    bounded by the mark size (~0.6-0.9 GB) rather than scaling with the image, which
+    is what lets a memory-tight host run it on a large upload.
   - ``lama`` (optional, extra ``lama``): big-LaMa via onnxruntime
     (``Carve/LaMa-ONNX``, Apache-2.0). CPU, resolution-robust, best quality on
     texture but ~200 MB model and ~4.7 GB peak RAM (too heavy for a small host).
@@ -67,6 +70,26 @@ def boxes_to_mask(
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dilate + 1, 2 * dilate + 1))
         mask = cv2.dilate(mask, k)
     return mask
+
+
+def _padded_crop_box(
+    mask: NDArray[Any], h: int, w: int, *, pad_frac: float, pad_min: int
+) -> tuple[int, int, int, int] | None:
+    """Bounding box of the set mask pixels, padded and clamped to the image.
+
+    Returns ``(x0, y0, x1, y1)`` or ``None`` when the mask is empty. Both learned
+    backends crop to this box so the ONNX working set is bounded by the mark size
+    rather than the whole image; ``pad_frac``/``pad_min`` tune how much surrounding
+    context the inpainter sees (LaMa then resizes the crop to its fixed square,
+    MI-GAN feeds it at native resolution).
+    """
+    ys, xs = np.where(mask > 0)
+    if len(xs) == 0:
+        return None
+    pad = max(pad_min, int(pad_frac * max(xs.max() - xs.min() + 1, ys.max() - ys.min() + 1)))
+    x0, y0 = max(0, int(xs.min()) - pad), max(0, int(ys.min()) - pad)
+    x1, y1 = min(w, int(xs.max()) + 1 + pad), min(h, int(ys.max()) + 1 + pad)
+    return x0, y0, x1, y1
 
 
 def erase_cv2(
@@ -139,14 +162,10 @@ def erase_lama(image_bgr: NDArray[Any], mask: NDArray[Any]) -> NDArray[Any]:
     size = next((d for d in reversed(dims) if isinstance(d, int) and d > 1), 512)
 
     h, w = image_bgr.shape[:2]
-    ys, xs = np.where(mask > 0)
-    if len(xs) == 0:
+    box = _padded_crop_box(mask, h, w, pad_frac=0.4, pad_min=16)
+    if box is None:
         return image_bgr.copy()
-
-    # Padded crop around the mask (context for the inpainter).
-    pad = max(16, int(0.4 * max(xs.max() - xs.min() + 1, ys.max() - ys.min() + 1)))
-    cx0, cy0 = max(0, int(xs.min()) - pad), max(0, int(ys.min()) - pad)
-    cx1, cy1 = min(w, int(xs.max()) + 1 + pad), min(h, int(ys.max()) + 1 + pad)
+    cx0, cy0, cx1, cy1 = box
     crop = image_bgr[cy0:cy1, cx0:cx1]
     crop_mask = mask[cy0:cy1, cx0:cx1]
     ch, cw = crop.shape[:2]
@@ -201,16 +220,25 @@ def _get_migan_session() -> object:
 def erase_migan(image_bgr: NDArray[Any], mask: NDArray[Any]) -> NDArray[Any]:
     """Inpaint ``mask`` (255 = erase) with MI-GAN via onnxruntime (CPU).
 
-    The MI-GAN ONNX pipeline crops around the mask bbox internally and re-composites,
-    so the full image is fed at native resolution. Only the masked pixels are pasted
-    back, so untouched areas stay pixel-exact.
+    Like ``erase_lama``, we crop a padded region around the mask, feed only that crop
+    to the ONNX model, and paste only the masked pixels back -- so untouched areas stay
+    pixel-exact and the ONNX working set is bounded by the MARK size, not the whole
+    image. MI-GAN accepts arbitrary spatial dims, so (unlike LaMa's fixed 512 square)
+    the crop is fed at NATIVE resolution -- no resize, so the mark is seen at full
+    scale. Feeding the whole frame instead made peak RAM scale with the image
+    (~0.6 GB at 4 MP up to ~2.4 GB at 25 MP, measured 2026-07); cropping holds the
+    inpaint working set roughly constant, so a memory-tight host (e.g. a 1-2 GB web
+    worker) can run MI-GAN on a 25 MP upload. Cropping does not degrade the fill:
+    a small mark only needs local context, and on real marks the cropped fill is on
+    par with -- sometimes cleaner than -- the full-frame fill (a tighter view gives
+    the GAN less room to hallucinate large background structure).
 
     Mask polarity: the shipped ``andraniksargsyan/migan`` ONNX expects 0 = hole
     (inpaint) / 255 = known (keep) -- the INVERSE of this package's 255-erase
     convention -- so the mask is inverted before feeding the model (corpus-validated
     2026-07; feeding 255=hole regenerates the whole frame into stripes).
 
-    Like ``erase_lama``, accepts 1-channel (grayscale) and 4-channel (BGRA) input.
+    Accepts 1-channel (grayscale) and 4-channel (BGRA) input.
     """
     if image_bgr.ndim == 2:
         bgr = erase_migan(cv2.cvtColor(image_bgr, cv2.COLOR_GRAY2BGR), mask)
@@ -219,26 +247,40 @@ def erase_migan(image_bgr: NDArray[Any], mask: NDArray[Any]) -> NDArray[Any]:
         bgr = erase_migan(np.ascontiguousarray(image_bgr[:, :, :3]), mask)
         return np.dstack([bgr, image_bgr[:, :, 3]])
 
+    h, w = image_bgr.shape[:2]
+    # 2x the mark size (min 256 px) gives ample local context while a small corner
+    # mask keeps the crop small regardless of the full image resolution; the crop is
+    # clamped to the image, so a mark already spanning the frame degrades to the
+    # whole image (the old behavior) rather than erroring.
+    box = _padded_crop_box(mask, h, w, pad_frac=2.0, pad_min=256)
+    if box is None:
+        return image_bgr.copy()
+    cx0, cy0, cx1, cy1 = box
+    crop = np.ascontiguousarray(image_bgr[cy0:cy1, cx0:cx1])
+    crop_mask = mask[cy0:cy1, cx0:cx1]
+    ch, cw = crop.shape[:2]
+
     session = _get_migan_session()
     inp = session.get_inputs()  # type: ignore[attr-defined]
     img_name, mask_name = inp[0].name, inp[1].name
-    h, w = image_bgr.shape[:2]
 
-    rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    img_in = np.transpose(rgb, (2, 0, 1))[None].astype(np.uint8)  # (1,3,H,W)
+    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+    img_in = np.transpose(rgb, (2, 0, 1))[None].astype(np.uint8)  # (1,3,ch,cw)
     # invert to MI-GAN polarity: 255 where KNOWN (keep), 0 where hole (erase)
-    known = (mask <= 127).astype(np.uint8) * 255
-    mask_in = known[None, None]  # (1,1,H,W)
+    known = (crop_mask <= 127).astype(np.uint8) * 255
+    mask_in = known[None, None]  # (1,1,ch,cw)
 
     out = session.run(None, {img_name: img_in, mask_name: mask_in})[0]  # type: ignore[attr-defined]
-    res = np.transpose(np.asarray(out)[0], (1, 2, 0)).astype(np.uint8)  # (H',W',3) RGB
-    if res.shape[:2] != (h, w):
-        res = cv2.resize(res, (w, h), interpolation=cv2.INTER_LINEAR)
+    res = np.transpose(np.asarray(out)[0], (1, 2, 0)).astype(np.uint8)  # (ch',cw',3) RGB
+    if res.shape[:2] != (ch, cw):
+        res = cv2.resize(res, (cw, ch), interpolation=cv2.INTER_LINEAR)
     out_bgr = cv2.cvtColor(res, cv2.COLOR_RGB2BGR)
 
     result = image_bgr.copy()
-    hole = mask > 127
-    result[hole] = out_bgr[hole]
+    region = result[cy0:cy1, cx0:cx1]
+    hole = crop_mask > 127
+    region[hole] = out_bgr[hole]
+    result[cy0:cy1, cx0:cx1] = region
     return result
 
 
