@@ -374,12 +374,15 @@ def _populate_registry_fields(buf: bytes, c2pa_info: dict[str, Any]) -> bool:
         c2pa_info["source_type"] = "trainedAlgorithmicMedia (AI-generated)"
         c2pa_info["ai_source_kind"] = "generated"
         ai_source = True
-    elif b"algorithmicMedia" in buf:
-        c2pa_info["source_type"] = "algorithmicMedia"
     elif b"compositeWithTrainedAlgorithmicMedia" in buf:
+        # Checked BEFORE bare ``algorithmicMedia``: a manifest can carry both tokens
+        # (an AI-enhanced composite with a procedural ingredient), and the bare-token
+        # branch would otherwise fire first and misclassify the AI composite as non-AI.
         c2pa_info["source_type"] = "compositeWithTrainedAlgorithmicMedia (AI-enhanced)"
         c2pa_info["ai_source_kind"] = "enhanced"
         ai_source = True
+    elif b"algorithmicMedia" in buf:
+        c2pa_info["source_type"] = "algorithmicMedia"
 
     # SynthID pixel-watermark proxy: a C2PA manifest from a SynthID-using
     # vendor (Google/OpenAI) on AI-generated content implies an invisible

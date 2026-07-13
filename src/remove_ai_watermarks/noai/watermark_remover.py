@@ -964,8 +964,9 @@ def remove_watermark(
     """Convenience function to remove watermark from an image.
 
     ``strength=None`` lets the profile pick its vendor-adaptive default
-    (0.20 OpenAI / 0.30 Google / 0.30 unknown, from the C2PA SynthID proxy on the
-    input; same ladder for the controlnet and sdxl pipelines). Pass a value to override.
+    (0.10 OpenAI / 0.15 Google / 0.15 unknown, from the C2PA SynthID proxy on the
+    input; same ladder for the controlnet and sdxl pipelines -- the single source of
+    truth is ``watermark_profiles.py``). Pass a value to override.
 
     ``region=(x, y, w, h)`` restricts the regeneration to that box and preserves the
     real photo elsewhere -- for AI-enhanced composites (see

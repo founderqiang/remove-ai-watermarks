@@ -183,6 +183,17 @@ class TestQualityPreservingWrite:
         assert back is not None
         assert float(np.abs(img.astype(int) - back.astype(int)).mean()) < 1.0
 
+    def test_webp_written_lossless(self, tmp_path: Path) -> None:
+        # Regression: cv2 WebP quality 1-100 is LOSSY; lossless needs > 100. A
+        # mark-removal .webp re-encode must NOT degrade the untouched pixels, so
+        # a full-frame round-trip of random data must be bit-identical.
+        img = np.random.default_rng(0).integers(0, 256, (80, 80, 3), dtype=np.uint8)
+        p = tmp_path / "x.webp"
+        assert image_io.imwrite(p, img) is True
+        back = image_io.imread(p)
+        assert back is not None
+        assert np.array_equal(back, img), "WebP re-encode was lossy"
+
     @pytest.mark.skipif(not _heif_writable("HEIF"), reason="no HEIC encoder in this env")
     def test_heic_write_roundtrips(self, tmp_path: Path) -> None:
         # cv2 cannot encode HEIC (used to raise); imwrite must route through Pillow.

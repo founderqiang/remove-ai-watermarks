@@ -315,6 +315,8 @@ class TextMarkEngine:
         With ``force`` and no glyph found, falls back to the whole geometry box (the
         ``--no-detect`` path). The caller gates on detection.
         """
+        if image is None or image.size == 0:
+            return None  # guard before to_bgr (cvtColor raises on an empty Mat); mirror detect()
         image = image_io.to_bgr(image)
         h, w = image.shape[:2]
         if h < 32 or w < 64:

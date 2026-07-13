@@ -321,6 +321,18 @@ class TestC2PADigitalSourceType:
         assert "compositeWithTrainedAlgorithmicMedia" in info["source_type"]
         assert "synthid_watermark" in info  # AI-enhanced + OpenAI issuer
 
+    def test_composite_and_bare_algorithmic_cooccur_is_ai(self):
+        """Regression: a manifest carrying BOTH ``compositeWithTrainedAlgorithmicMedia``
+        (AI-enhanced) and a bare procedural ``algorithmicMedia`` token must classify as
+        AI-enhanced. Before the reorder the bare-token elif fired first and returned
+        non-AI, dropping the composite AI signal (a false negative)."""
+        from remove_ai_watermarks.noai.c2pa import _populate_registry_fields
+
+        info: dict = {}
+        _populate_registry_fields(b"x compositeWithTrainedAlgorithmicMedia x algorithmicMedia x", info)
+        assert info.get("ai_source_kind") == "enhanced"
+        assert "compositeWithTrainedAlgorithmicMedia" in info["source_type"]
+
 
 # ── ISOBMFF (AVIF / HEIF / JPEG-XL container stripping) ──────────────
 
@@ -400,6 +412,33 @@ class TestISOBMFF:
         assert ifd[piexif.ImageIFD.Software].strip() == b""
         assert ifd[piexif.ImageIFD.Make] == b"Canon"
 
+    def test_blank_aigc_block_in_exif(self):
+        """Parity with the JPEG path: the China TC260 ``{"AIGC":{...}}`` block in EXIF
+        ImageDescription must be blanked on the ISOBMFF path too -- ``blank_ai_exif_tokens``
+        is the ONLY EXIF scrubber for HEIC/AVIF (``_scrub_ai_exif`` never runs there)."""
+        import piexif
+
+        aigc = b'{"AIGC":{"Label":"1","ContentProducer":"00119144030008867405X210002","ProduceID":"abc"}}'
+        data = self._avif_with_exif({piexif.ImageIFD.ImageDescription: aigc, piexif.ImageIFD.Make: b"Canon"})
+        out, blanked = blank_ai_exif_tokens(data)
+        assert blanked >= 1
+        assert len(out) == len(data)  # same length -> box sizes / iloc stay valid
+        assert b'"AIGC"' not in out  # TC260 block destroyed
+        assert b"Canon" in out  # camera tag preserved
+
+    def test_blank_xai_signature_pair_in_exif(self):
+        """Parity: the xAI/Grok ``Signature:`` blob + UUID ``Artist`` pair in EXIF is
+        dropped together on the ISOBMFF path too."""
+        import piexif
+
+        sig = b"Signature: " + b"A" * 80
+        art = b"12345678-1234-1234-1234-123456789012"
+        data = self._avif_with_exif({piexif.ImageIFD.ImageDescription: sig, piexif.ImageIFD.Artist: art})
+        out, blanked = blank_ai_exif_tokens(data)
+        assert blanked == 2  # both the signature and the UUID artist
+        assert len(out) == len(data)
+        assert b"Signature: AAAA" not in out
+
     def test_blank_leaves_clean_exif_untouched(self):
         import piexif
 
@@ -412,6 +451,105 @@ class TestISOBMFF:
         out, blanked = blank_ai_exif_tokens(FTYP + b"\x00\x00\x00\x0cmdat" + b"pixels!!")
         assert blanked == 0
         assert out == FTYP + b"\x00\x00\x00\x0cmdat" + b"pixels!!"
+
+
+class TestIterTopLevelBoxes:
+    """The box walker's three size encodings and its underflow/overflow guards."""
+
+    def test_64bit_largesize(self):
+        from remove_ai_watermarks.noai.isobmff import _iter_top_level_boxes
+
+        # size32 == 1 -> a 64-bit largesize follows the type; total box length = 24.
+        box = struct.pack(">I", 1) + b"uuid" + struct.pack(">Q", 24) + b"payload!"
+        boxes = list(_iter_top_level_boxes(box))
+        assert len(boxes) == 1
+        start, end, btype, payload_off = boxes[0]
+        assert (start, end, btype, payload_off) == (0, 24, b"uuid", 16)
+
+    def test_size0_runs_to_eof(self):
+        from remove_ai_watermarks.noai.isobmff import _iter_top_level_boxes
+
+        box = struct.pack(">I", 0) + b"mdat" + b"tail-to-eof"
+        boxes = list(_iter_top_level_boxes(box))
+        assert len(boxes) == 1
+        start, end, btype, payload_off = boxes[0]
+        assert (start, end, btype, payload_off) == (0, len(box), b"mdat", 8)
+
+    def test_underflow_size_stops_safely(self):
+        from remove_ai_watermarks.noai.isobmff import _iter_top_level_boxes
+
+        # size (4) < the 8-byte header -> the guard returns without yielding a box.
+        assert list(_iter_top_level_boxes(struct.pack(">I", 4) + b"ftyp" + b"more")) == []
+
+    def test_overflow_size_stops_safely(self):
+        from remove_ai_watermarks.noai.isobmff import _iter_top_level_boxes
+
+        # size claims 999 but the buffer is far shorter -> guard returns, no partial box.
+        assert list(_iter_top_level_boxes(struct.pack(">I", 999) + b"uuid" + b"x")) == []
+
+
+class TestBlankAiXmpPackets:
+    """XMP-packet blanking: same-length overwrite only for AI-marked packets, and only
+    when the packet is fully delimited."""
+
+    AIMARK = b"trainedAlgorithmicMedia"
+
+    def test_ai_packet_blanked_same_length(self):
+        from remove_ai_watermarks.noai.isobmff import blank_ai_xmp_packets
+
+        packet = b'<?xpacket begin="x"?><x:xmpmeta>' + self.AIMARK + b'</x:xmpmeta><?xpacket end="w"?>'
+        data = b"boxhdr" + packet + b"tail"
+        out, n = blank_ai_xmp_packets(data)
+        assert n == 1
+        assert len(out) == len(data)  # same length -> iloc offsets stay valid
+        assert self.AIMARK not in out
+        assert b"boxhdr" in out
+        assert b"tail" in out
+
+    def test_clean_packet_left_intact(self):
+        from remove_ai_watermarks.noai.isobmff import blank_ai_xmp_packets
+
+        packet = b'<?xpacket begin="x"?><x:xmpmeta>plain copyright</x:xmpmeta><?xpacket end="w"?>'
+        out, n = blank_ai_xmp_packets(packet)
+        assert n == 0
+        assert out == packet
+
+    def test_missing_end_delimiter_not_blanked(self):
+        from remove_ai_watermarks.noai.isobmff import blank_ai_xmp_packets
+
+        # No <?xpacket end?> -> the packet regex cannot match, so it is left unchanged.
+        data = b'<?xpacket begin="x"?><x:xmpmeta>' + self.AIMARK + b"</x:xmpmeta>"
+        out, n = blank_ai_xmp_packets(data)
+        assert n == 0
+        assert out == data
+
+
+class TestC2paBufferScans:
+    """The shared buffer-scan helpers (used by both the PNG caBX parser and the
+    format-agnostic binary scan). Data-driven off the registries so they stay valid
+    as vendors are added."""
+
+    def test_soft_binding_vendors_in(self):
+        from remove_ai_watermarks.noai.c2pa import C2PA_SOFT_BINDINGS, soft_binding_vendors_in
+
+        sig, name = next(iter(C2PA_SOFT_BINDINGS.items()))
+        assert name in soft_binding_vendors_in(b"...manifest..." + sig + b"...tail...")
+        assert soft_binding_vendors_in(b"") == []
+        assert soft_binding_vendors_in(b"no soft-binding assertion here") == []
+
+    def test_synthid_vendors_in_requires_synthid_issuer(self):
+        from remove_ai_watermarks.noai.c2pa import C2PA_ISSUERS, SYNTHID_C2PA_ISSUERS, synthid_vendors_in
+
+        syn_sig = next(s for s in C2PA_ISSUERS if s in SYNTHID_C2PA_ISSUERS)
+        non_sig = next(s for s in C2PA_ISSUERS if s not in SYNTHID_C2PA_ISSUERS)
+        assert C2PA_ISSUERS[syn_sig] in synthid_vendors_in(b"x" + syn_sig + b"x")
+        # an issuer that does NOT pair SynthID with C2PA must not be reported as one
+        assert C2PA_ISSUERS[non_sig] not in synthid_vendors_in(b"x" + non_sig + b"x")
+
+    def test_synthid_verdict_format(self):
+        from remove_ai_watermarks.noai.c2pa import synthid_verdict
+
+        assert synthid_verdict("Google LLC") == "likely present (Google LLC embeds SynthID with C2PA)"
 
 
 class TestC2PAInvalidSignature:

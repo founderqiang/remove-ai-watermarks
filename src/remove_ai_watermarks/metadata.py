@@ -93,9 +93,17 @@ def c2pa_marker_in(data: bytes) -> bool:
 IPTC_AI_MARKERS: tuple[bytes, ...] = (
     b"trainedAlgorithmicMedia",
     b"compositeSynthetic",
-    b"algorithmicMedia",
     b"compositeWithTrainedAlgorithmicMedia",
 )
+# NOTE: bare ``algorithmicMedia`` is deliberately NOT here. That IPTC digitalSourceType
+# means "created purely by an algorithm, NOT from sampled training data" (procedural /
+# generative-code art) -- it is NOT AI/ML generation. Real "Made with AI" labels
+# (Meta / Instagram / MidJourney) use ``trainedAlgorithmicMedia``. Including the bare
+# token flagged clean procedural images as AI (is_ai=high + has_invisible_target=True ->
+# a diffusion scrub of clean content), contradicting the c2pa layer, which sets
+# source_type without ai_source for it (tests/test_noai.py::test_plain_algorithmic_media_not_flagged_ai).
+# It is not a substring of the trained/composite tokens, so its removal does not affect
+# their detection.
 
 # IPTC Photo Metadata 2025.1 (published 2025-11-27) added explicit AI-disclosure
 # XMP properties in the Iptc4xmpExt namespace. Their mere presence is an AI
@@ -521,18 +529,45 @@ _SAMSUNG_GENAI_RE = re.compile(rb'genAIType"\s*:\s*(-?\d+)')
 _SAMSUNG_EDITOR_MARKER = b"PhotoEditor_Re_Edit_Data"
 
 
+def _read_file_tail(image_path: Path, size: int) -> bytes:
+    """Return the last ``size`` bytes of the file (or the whole file if smaller)."""
+    try:
+        file_size = image_path.stat().st_size
+        with open(image_path, "rb") as f:
+            if file_size > size:
+                f.seek(file_size - size)
+            return f.read()
+    except OSError:
+        return b""
+
+
 def samsung_genai(image_path: Path) -> int | None:
     """Return Samsung's non-zero ``genAIType`` value if the image carries the
     Galaxy AI editing marker, else None.
 
     See the module note above ``_SAMSUNG_GENAI_RE``: detection is empirical and
     gated on the ``PhotoEditor_Re_Edit_Data`` container so an incidental
-    ``genAIType`` token cannot false-positive.
+    ``genAIType`` token cannot false-positive. Galaxy AI appends the marker as a
+    trailer AFTER the JPEG EOI, so on a multi-MB phone photo it sits past the quick-
+    scan window; when the head misses it, also read the file tail (else detection
+    and removal disagree -- the strip reads the whole file and would drop a marker
+    detection never reported).
     """
-    head = scan_head(image_path, _QUICK_SCAN_BYTES)
-    if _SAMSUNG_EDITOR_MARKER not in head:
+    data = scan_head(image_path, _QUICK_SCAN_BYTES)
+    if _SAMSUNG_EDITOR_MARKER not in data:
+        # The marker is a post-EOI trailer, so only a file LARGER than the quick-scan
+        # window can hide it past the head (`scan_head` already read a smaller file
+        # whole). Gate the extra tail read on that — `samsung_genai` is on the identify
+        # hot path, so a redundant 512 KB re-read per small image is not free.
+        try:
+            oversize = image_path.stat().st_size > _QUICK_SCAN_BYTES
+        except OSError:
+            oversize = False
+        if oversize:
+            data = _read_file_tail(image_path, _QUICK_SCAN_BYTES)
+    if _SAMSUNG_EDITOR_MARKER not in data:
         return None
-    m = _SAMSUNG_GENAI_RE.search(head)
+    m = _SAMSUNG_GENAI_RE.search(data)
     if m is None:
         return None
     return int(m.group(1)) or None
@@ -709,47 +744,87 @@ def xai_signature(image_path: Path) -> bool:
     )
 
 
-def _scrub_ai_exif(exif_dict: dict[str, Any]) -> list[str]:
-    """Delete AI-provenance tags from a piexif dict's ``0th`` IFD, in place.
+def _is_aigc_exif_value(raw: object) -> bool:
+    """Whether an EXIF tag value carries a China TC260 AIGC producer/service block.
 
-    Removes (a) the xAI/Grok signature pair (``ImageDescription`` "Signature: ..."
-    + UUID ``Artist``) and (b) any ``Software`` / ``Make`` / ``Artist`` /
-    ``ImageDescription`` tag whose value carries an ``AI_GENERATOR_TOKENS`` token
-    (Ideogram's ``Make``, Firefly's ``Software``, etc.). Mirrors the detection in
-    ``xai_signature`` / ``exif_generator`` so removal scrubs exactly what
-    ``identify`` flags, while leaving genuine camera/editor EXIF intact. Returns
-    the names of the removed tags (for logging).
+    Mirrors ``aigc_label``'s EXIF path: the ``{"AIGC":{...}}`` wrapper embedded in
+    ``UserComment`` / ``ImageDescription`` by China-served generators (Doubao's
+    producer schema AND Tencent Cloud's service-provider schema, both keyed under
+    ``_TC260_FIELDS``). Gated on both the ``AIGC`` marker and a TC260 field so a
+    coincidental token cannot false-drop a genuine caption/comment.
+    """
+    if not isinstance(raw, (bytes, bytearray)):
+        return False
+    if b"AIGC" not in raw:
+        return False
+    text = bytes(raw).decode("latin-1", "ignore")
+    return any(field in text for field in _TC260_FIELDS)
+
+
+def _ai_exif_targets(loaded: dict[str, Any]) -> list[tuple[str, int, bytes, str]]:
+    """The SINGLE AI-EXIF rule set, as ``(ifd_key, tag, value_bytes, name)`` entries.
+
+    Shared by both EXIF scrubbers so their coverage cannot drift: the JPEG-path
+    :func:`_scrub_ai_exif` pops each tag, and the ISOBMFF-path
+    ``isobmff.blank_ai_exif_tokens`` blanks each value's bytes in place. Covers
+    (a) the xAI/Grok ``Signature:`` + UUID-``Artist`` pair, (b) any ``Software`` /
+    ``Make`` / ``Artist`` / ``ImageDescription`` tag carrying an ``AI_GENERATOR_TOKENS``
+    token, and (c) the China TC260 ``{"AIGC":{...}}`` block in ``ImageDescription``
+    (0th) or ``UserComment`` (Exif). De-duplicated by ``(ifd_key, tag)`` so a value
+    flagged by two rules is removed and named once. Mirrors the detection in
+    ``xai_signature`` / ``exif_generator`` / ``aigc_label``; adding a new AI EXIF
+    placement here reaches BOTH containers.
     """
     import piexif
 
     from remove_ai_watermarks.noai.constants import AI_GENERATOR_TOKENS
 
-    ifd = exif_dict.get("0th")
-    if not ifd:
-        return []
+    ifd0: dict[int, Any] = loaded.get("0th") or {}
+    ifde: dict[int, Any] = loaded.get("Exif") or {}
+    seen: set[tuple[str, int]] = set()
+    targets: list[tuple[str, int, bytes, str]] = []
 
-    drop: dict[int, str] = {}
+    def add(ifd_key: str, ifd: dict[int, Any], tag: int, name: str) -> None:
+        value = ifd.get(tag)
+        if isinstance(value, bytes) and (ifd_key, tag) not in seen:
+            seen.add((ifd_key, tag))
+            targets.append((ifd_key, tag, value, name))
 
     # (a) xAI / Grok: the Signature blob and the UUID Artist go together.
     if _is_xai_signature_pair(
-        _exif_text(ifd, piexif.ImageIFD.ImageDescription), _exif_text(ifd, piexif.ImageIFD.Artist)
+        _exif_text(ifd0, piexif.ImageIFD.ImageDescription), _exif_text(ifd0, piexif.ImageIFD.Artist)
     ):
-        drop[piexif.ImageIFD.ImageDescription] = "ImageDescription"
-        drop[piexif.ImageIFD.Artist] = "Artist"
-
-    # (b) Known AI generator token in any of the text tags.
+        add("0th", ifd0, piexif.ImageIFD.ImageDescription, "ImageDescription")
+        add("0th", ifd0, piexif.ImageIFD.Artist, "Artist")
+    # (b) known AI generator token in a 0th text tag.
     for tag, name in (
         (piexif.ImageIFD.Software, "Software"),
         (piexif.ImageIFD.Make, "Make"),
         (piexif.ImageIFD.Artist, "Artist"),
         (piexif.ImageIFD.ImageDescription, "ImageDescription"),
     ):
-        if any(token in _exif_text(ifd, tag).lower() for token in AI_GENERATOR_TOKENS):
-            drop[tag] = name
+        if any(token in _exif_text(ifd0, tag).lower() for token in AI_GENERATOR_TOKENS):
+            add("0th", ifd0, tag, name)
+    # (c) TC260 AIGC block in ImageDescription (0th) or UserComment (Exif sub-IFD).
+    if _is_aigc_exif_value(ifd0.get(piexif.ImageIFD.ImageDescription)):
+        add("0th", ifd0, piexif.ImageIFD.ImageDescription, "ImageDescription")
+    if _is_aigc_exif_value(ifde.get(piexif.ExifIFD.UserComment)):
+        add("Exif", ifde, piexif.ExifIFD.UserComment, "UserComment")
 
-    for tag in drop:
-        ifd.pop(tag, None)
-    return list(drop.values())
+    return targets
+
+
+def _scrub_ai_exif(exif_dict: dict[str, Any]) -> list[str]:
+    """Delete the AI-provenance EXIF tags (`_ai_exif_targets`) from a piexif dict's
+    ``0th`` / ``Exif`` IFDs in place; return the removed tag names (for logging).
+    Genuine camera/editor EXIF is left intact."""
+    removed: list[str] = []
+    for ifd_key, tag, _value, name in _ai_exif_targets(exif_dict):
+        ifd = exif_dict.get(ifd_key)
+        if ifd is not None:
+            ifd.pop(tag, None)
+            removed.append(name)
+    return removed
 
 
 def get_ai_metadata(image_path: Path) -> dict[str, str]:
@@ -879,17 +954,50 @@ def _jpeg_app_carries_ai(marker: int, payload: bytes) -> bool:
     if marker == 0xEB:  # APP11: C2PA / JUMBF manifest
         return c2pa_marker_in(payload) or b"jumb" in payload[:256].lower()
     if marker == 0xE1 and payload.startswith(b"http://ns.adobe.com/xap/"):  # APP1 XMP
-        return c2pa_marker_in(payload) or any(m in payload for m in AIGC_MARKERS)
+        return (
+            c2pa_marker_in(payload)
+            or any(m in payload for m in AIGC_MARKERS)
+            or any(m in payload for m in IPTC_AI_MARKERS)  # digitalSourceType in XMP, not only APP13
+            or any(m in payload for m in IPTC_AI_FIELD_MARKERS)  # IPTC 2025.1 AI-disclosure fields
+        )
     if marker == 0xED:  # APP13: Photoshop / IPTC
         return any(m in payload for m in IPTC_AI_MARKERS) or any(m in payload for m in IPTC_AI_FIELD_MARKERS)
+    # A bare / wrapped China TC260 AIGC block (``AIGC{...}`` or ``{"AIGC":{...}}``) that
+    # some China-served generators glue into a non-standard APP segment near the JFIF
+    # header. ``aigc_label`` detects it anywhere in the scan head, so removal must drop
+    # the carrying segment too (detection<->removal parity). Skip APP1-EXIF (0xE1
+    # ``Exif``): its camera tags are scrubbed tag-by-tag via piexif, and the AIGC-in-
+    # UserComment/ImageDescription placement is handled there, so it must not be dropped
+    # wholesale here.
+    if 0xE0 <= marker <= 0xEF and not (marker == 0xE1 and payload.startswith(b"Exif")):
+        return _is_aigc_exif_value(payload)
     return False
+
+
+def _strip_samsung_trailer(scan_and_tail: bytes) -> bytes:
+    """Drop a Samsung Galaxy AI editing trailer appended AFTER the JPEG EOI.
+
+    Galaxy AI records its ``PhotoEditor_Re_Edit_Data`` (``genAIType``) blob as a
+    proprietary trailer past the final ``FFD9`` end-of-image, so the verbatim
+    scan copy in :func:`_strip_jpeg_metadata_lossless` would carry it through. If
+    the marker is present in the post-EOI trailer, truncate at EOI (the coded scan
+    is untouched, pixels stay bit-identical). A JPEG with no such trailer -- or a
+    non-Samsung trailer (e.g. an MPF multi-picture block) -- is returned unchanged.
+    """
+    if _SAMSUNG_EDITOR_MARKER not in scan_and_tail:
+        return scan_and_tail
+    eoi = scan_and_tail.rfind(b"\xff\xd9")
+    if eoi == -1 or _SAMSUNG_EDITOR_MARKER not in scan_and_tail[eoi:]:
+        return scan_and_tail  # marker not in the post-EOI trailer; leave the scan alone
+    return scan_and_tail[: eoi + 2]
 
 
 def _strip_jpeg_metadata_lossless(source_path: Path, output_path: Path) -> bool:
     """Remove AI metadata from a JPEG WITHOUT re-encoding the DCT scan, so the pixels
     stay bit-identical (the point of "work with originals" -- a metadata strip must not
     degrade the image). Walks the marker segments up to SOS, drops the AI-bearing APP
-    segments (:func:`_jpeg_app_carries_ai`), copies the entropy-coded scan verbatim,
+    segments (:func:`_jpeg_app_carries_ai`), copies the entropy-coded scan verbatim
+    (minus a Samsung Galaxy AI trailer past EOI, via :func:`_strip_samsung_trailer`),
     then scrubs AI EXIF tags in place via piexif (which rewrites only the APP1 EXIF,
     leaving genuine camera EXIF and the scan untouched). Returns False if the bytes are
     not a parseable JPEG, so the caller falls back to the near-lossless PIL re-save."""
@@ -905,7 +1013,7 @@ def _strip_jpeg_metadata_lossless(source_path: Path, output_path: Path) -> bool:
             return False  # malformed marker boundary: defer to the PIL re-encode fallback
         marker = data[i + 1]
         if marker in (0xDA, 0xD9):  # SOS / EOI -> the coded scan follows; copy verbatim
-            out += data[i:]
+            out += _strip_samsung_trailer(data[i:])
             break
         if 0xD0 <= marker <= 0xD7 or marker == 0x01:  # standalone markers carry no length
             out += data[i : i + 2]

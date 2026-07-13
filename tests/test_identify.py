@@ -926,6 +926,15 @@ class TestVendorOf:
         assert _vendor_of("a regular photo") is None
         assert _vendor_of(None) is None
 
+    def test_registered_vendors_normalize(self):
+        # Regression: these registered C2PA vendors returned None, so their claims never
+        # entered clash detection (a coverage hole). They now normalize to one origin.
+        assert _vendor_of("ByteDance (Doubao / Jimeng / Volcano Engine)") == "ByteDance"
+        assert _vendor_of("Dreamina/1.2") == "ByteDance"
+        assert _vendor_of("Canva (Magic Media)") == "Canva"
+        assert _vendor_of("Black Forest Labs (FLUX)") == "Black Forest Labs"
+        assert _vendor_of("Eleven Labs Inc.") == "ElevenLabs"
+
 
 class TestIntegrityClashesHelper:
     def test_two_ai_vendors_clash(self):
@@ -948,6 +957,31 @@ class TestIntegrityClashesHelper:
                 _integrity_clashes({"c2pa": c2pa_vendor, "synthid": synthid_vendor}, None, camera_has_ai_marker=True)
                 == []
             )
+
+    def test_bytedance_c2pa_plus_own_aigc_no_clash(self):
+        # A legit ByteDance/Doubao image carries BOTH a ByteDance C2PA manifest and its
+        # own China TC260 AIGC label. The label is ByteDance's own regulatory stamp, so
+        # it must be attributed to ByteDance and NOT read as a competing origin.
+        assert (
+            _integrity_clashes({"c2pa": "ByteDance", "aigc": "China AIGC (TC260)"}, None, camera_has_ai_marker=True)
+            == []
+        )
+
+    def test_foreign_vendor_plus_aigc_still_clashes(self):
+        # But a NON-Chinese vendor's C2PA next to a China TC260 label names two different
+        # origins -- a laundering tell that must still fire (the generic label stays generic).
+        clashes = _integrity_clashes({"c2pa": "OpenAI", "aigc": "China AIGC (TC260)"}, None, camera_has_ai_marker=True)
+        assert len(clashes) == 1
+        assert "Conflicting AI-origin" in clashes[0]
+
+    def test_bytedance_c2pa_plus_foreign_generator_clashes(self):
+        # Coverage win: a transplanted ByteDance C2PA manifest next to an independent
+        # foreign generator stamp is a laundering tell that went undetected before
+        # ByteDance was added to _vendor_of.
+        clashes = _integrity_clashes({"c2pa": "ByteDance", "exif_generator": "OpenAI"}, None, camera_has_ai_marker=True)
+        assert len(clashes) == 1
+        assert "ByteDance" in clashes[0]
+        assert "OpenAI" in clashes[0]
 
     def test_manifest_vendor_vs_independent_signal_clashes(self):
         # A vendor named only inside the manifest still clashes with a genuinely

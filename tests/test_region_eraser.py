@@ -8,6 +8,40 @@ import pytest
 from remove_ai_watermarks.region_eraser import boxes_to_mask, erase, lama_available, migan_available
 
 
+class TestPaddedCropBox:
+    """The padded bounding box that bounds the learned backends' ONNX working set."""
+
+    def test_empty_mask_returns_none(self):
+        from remove_ai_watermarks.region_eraser import _padded_crop_box
+
+        assert _padded_crop_box(np.zeros((100, 100), np.uint8), 100, 100, pad_frac=0.1, pad_min=8) is None
+
+    def test_pad_min_dominates_and_clamps_at_border(self):
+        from remove_ai_watermarks.region_eraser import _padded_crop_box
+
+        mask = np.zeros((100, 100), np.uint8)
+        mask[0:5, 0:5] = 255  # 5-px mark in the top-left corner
+        # pad = max(8, int(0.1*5)) = 8; x0 clamps to 0 (not -8), x1 = min(100, 4+1+8) = 13.
+        assert _padded_crop_box(mask, 100, 100, pad_frac=0.1, pad_min=8) == (0, 0, 13, 13)
+
+    def test_pad_frac_dominates_for_large_mark(self):
+        from remove_ai_watermarks.region_eraser import _padded_crop_box
+
+        mask = np.zeros((400, 400), np.uint8)
+        mask[100:300, 100:300] = 255  # 200-px span
+        # pad = max(8, int(0.2*200)) = 40; box = (100-40, .., 299+1+40, ..).
+        assert _padded_crop_box(mask, 400, 400, pad_frac=0.2, pad_min=8) == (60, 60, 340, 340)
+
+    def test_clamps_at_far_border(self):
+        from remove_ai_watermarks.region_eraser import _padded_crop_box
+
+        mask = np.zeros((50, 60), np.uint8)
+        mask[45:50, 55:60] = 255  # bottom-right corner
+        _x0, _y0, x1, y1 = _padded_crop_box(mask, 50, 60, pad_frac=0.1, pad_min=8)
+        assert x1 == 60  # clamped to w, no overflow
+        assert y1 == 50  # clamped to h, no overflow
+
+
 class TestBoxesToMask:
     def test_mask_set_inside_box(self):
         mask = boxes_to_mask((100, 100), [(10, 20, 30, 40)], dilate=0)

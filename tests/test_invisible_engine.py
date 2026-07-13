@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image
 
 from remove_ai_watermarks.invisible_engine import InvisibleEngine, _target_size, is_available
@@ -195,3 +196,24 @@ class TestEsrganUpscale:
         out = InvisibleEngine._esrgan_upscale(self._fake_engine(), img, (512, 341))
         assert out.size == (512, 341)
         assert np.array_equal(np.asarray(out), np.asarray(img.resize((512, 341), Image.Resampling.LANCZOS)))
+
+
+class TestCannyControlImage:
+    """The ControlNet canny conditioning image builder (pure cv2/numpy; behind the gpu
+    extra since it lives on WatermarkRemover). Skips when torch/diffusers are absent."""
+
+    def test_edge_map_is_3channel_rgb(self):
+        if not is_available():
+            pytest.skip("gpu extra (torch/diffusers) not installed")
+        import numpy as np
+
+        from remove_ai_watermarks.noai.watermark_remover import WatermarkRemover
+
+        rng = np.random.default_rng(0)
+        img = Image.fromarray(rng.integers(0, 256, (64, 80, 3), dtype=np.uint8))
+        # The method uses no instance state, so call it unbound with a dummy self.
+        out = WatermarkRemover._build_canny_control_image(None, img)  # type: ignore[arg-type]
+        arr = np.array(out)
+        assert out.mode == "RGB"
+        assert arr.shape == (64, 80, 3)
+        assert arr.max() <= 255

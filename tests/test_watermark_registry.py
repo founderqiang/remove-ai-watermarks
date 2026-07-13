@@ -49,6 +49,28 @@ class TestScan:
         dets = reg.detect_marks(np.zeros((256, 256, 3), np.uint8), include_explicit=False)
         assert not any(d.detected for d in dets)
 
+    @pytest.mark.parametrize("shape", [(1, 1, 3), (8, 8, 3), (15, 15, 3), (12, 300, 3), (300, 10, 3)])
+    def test_tiny_image_no_crash(self, shape):
+        """Regression: an image whose short side is < 16 px (below the Gemini template
+        floor) must yield no detection, not crash. detect_marks/remove_auto_marks are
+        the public visible/all/batch path; a tiny thumbnail in a batch used to take the
+        whole auto pass down with an IndexError (empty candidate list dereference)."""
+        img = np.full(shape, 100, np.uint8)
+        assert not any(d.detected for d in reg.detect_marks(img, include_explicit=False))
+        result, removed = reg.remove_auto_marks(img, backend="cv2")
+        assert removed == []
+        assert result.shape == img.shape
+
+    @pytest.mark.parametrize("shape", [(0, 5), (5, 0), (0, 5, 4), (0, 0)])
+    def test_forced_remove_on_empty_array_no_crash(self, shape):
+        """Regression: footprint_mask ran to_bgr (cvtColor) before any size check, so a
+        forced remove on a zero-size ndarray crashed (cv2.error on an empty Mat). detect
+        already guarded this; footprint_mask must too. Covers the text + gemini engines."""
+        empty = np.zeros(shape, np.uint8)
+        for key in ("doubao", "jimeng", "samsung", "gemini"):
+            _result, mask = reg.get_mark(key).remove(empty, force=True)
+            assert mask is None
+
 
 class TestBackendResolution:
     def test_auto_resolves_to_available_backend(self):

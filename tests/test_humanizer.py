@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from remove_ai_watermarks.humanizer import apply_analog_humanizer, unsharp_mask
 
@@ -70,6 +71,15 @@ def test_chromatic_shift_does_not_wrap_opposite_edge():
     # R (index 2) rolled left -> its right border must stay bright (near 255),
     # NOT wrap the dark left edge.
     assert result[:, -shift:, 2].min() > 195
+
+
+@pytest.mark.parametrize(("width", "shift"), [(1, 1), (3, 3), (3, 5), (5, 10)])
+def test_chromatic_shift_wider_than_image_no_crash(width: int, shift: int):
+    """Regression: a chromatic_shift >= image width left the edge-replication slices
+    empty and crashed the broadcast (ValueError). The shift must clamp to width-1."""
+    img = np.full((4, width, 3), 120, np.uint8)
+    result = apply_analog_humanizer(img, grain_intensity=0.0, chromatic_shift=shift)
+    assert result.shape == img.shape
 
 
 def test_unsharp_disabled_returns_unchanged_copy():
@@ -147,3 +157,19 @@ class TestAdaptivePolish:
         a = adaptive_polish(soft, reference, seed=7)
         b = adaptive_polish(soft, reference, seed=7)
         assert np.array_equal(a, b)
+
+    def test_all_edges_reference_grain_mask_near_zero(self):
+        # An all-high-frequency target: _smooth_grain_mask suppresses edges, so the grain
+        # mask is ~all-zero (grain adds nothing) -- adaptive_polish must still return a
+        # valid same-shape image, not crash on the empty-mask branch.
+        import cv2
+
+        from remove_ai_watermarks.humanizer import _smooth_grain_mask, adaptive_polish
+
+        rng = np.random.default_rng(5)
+        edges = rng.integers(0, 256, (120, 120, 3), dtype=np.uint8)  # all high-frequency
+        assert _smooth_grain_mask(edges).mean() < _smooth_grain_mask(np.full((120, 120, 3), 128, np.uint8)).mean()
+        soft = cv2.GaussianBlur(edges, (0, 0), sigmaX=3.0)
+        out = adaptive_polish(soft, edges, seed=0)
+        assert out.shape == soft.shape
+        assert out.dtype == np.uint8

@@ -573,6 +573,16 @@ class TestMetadataCommand:
         assert result.exit_code == 0
         assert "stripped" in result.output
 
+    def test_metadata_remove_in_place(self, runner, tmp_png_with_ai_metadata):
+        """With ``-o`` omitted, the strip overwrites the source in place (default
+        output_path=None). Previously every test passed an explicit ``-o``."""
+        from remove_ai_watermarks.metadata import has_ai_metadata
+
+        assert has_ai_metadata(tmp_png_with_ai_metadata)  # precondition
+        result = runner.invoke(main, ["metadata", str(tmp_png_with_ai_metadata), "--remove"])
+        assert result.exit_code == 0, result.output
+        assert not has_ai_metadata(tmp_png_with_ai_metadata)  # source overwritten, AI metadata gone
+
 
 class TestIdentifyCommand:
     """Tests for the 'identify' subcommand."""
@@ -599,6 +609,18 @@ class TestIdentifyCommand:
         assert result.exit_code == 0
         assert "AI-generated" in result.output
         assert "Stable Diffusion" in result.output
+
+    def test_identify_reports_generated_source_kind(self, runner):
+        """The C2PA trainedAlgorithmicMedia source type sharpens the verdict to
+        'AI-generated (fully synthetic)' at the CLI (the ai_source_kind branch)."""
+        from pathlib import Path
+
+        sample = Path(__file__).resolve().parent.parent / "data" / "samples" / "chatgpt-1.png"
+        if not sample.exists():
+            pytest.skip("chatgpt sample not present")
+        result = runner.invoke(main, ["identify", str(sample), "--no-visible"])
+        assert result.exit_code == 0
+        assert "AI-generated (fully synthetic)" in result.output
 
     def test_identify_json_is_valid(self, runner, tmp_png_with_ai_metadata):
         result = runner.invoke(main, ["identify", str(tmp_png_with_ai_metadata), "--no-visible", "--json"])
@@ -774,6 +796,34 @@ class TestBatchCommand:
         expected_dir = tmp_path / "input_clean"
         assert expected_dir.exists()
 
+    def test_batch_errors_exit_nonzero(self, runner, tmp_path):
+        """Regression: batch used to always exit 0 even when every image errored,
+        hiding failure from a wrapping service. A corrupt image must yield a non-zero
+        exit and an error count."""
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        (input_dir / "corrupt.png").write_bytes(b"this is not a PNG at all" * 50)
+        result = runner.invoke(main, ["batch", str(input_dir), "--mode", "visible"])
+        assert result.exit_code != 0, result.output
+        assert "error" in result.output.lower()
+
+    def test_batch_invisible_gpu_missing_writes_output_and_exits_nonzero(self, runner, tmp_path):
+        """Regression: batch --mode invisible with a signal-bearing image but no GPU
+        deps used to write NO output for that image and still exit 0, silently dropping
+        the files that most needed processing. It must now copy the input through (so the
+        output dir is complete), warn about the retained SynthID watermark, and exit
+        non-zero -- mirroring the single ``all`` command."""
+        input_dir = _make_batch_dir_with_metadata(tmp_path, count=3)  # SD params = invisible signal
+        output_dir = tmp_path / "output"
+        with patch("remove_ai_watermarks.invisible_engine.is_available", return_value=False):
+            result = runner.invoke(
+                main,
+                ["batch", str(input_dir), "-o", str(output_dir), "--mode", "invisible"],
+            )
+        assert result.exit_code != 0, result.output
+        assert "NOT removed" in result.output
+        assert len(list(output_dir.glob("*.png"))) == 3  # every input copied through, none dropped
+
 
 class TestGpuHintMarkup:
     """The GPU-extra install hint must reach the user with the ``[gpu]`` token
@@ -887,3 +937,26 @@ def test_visible_backend_runtime_error_exits_cleanly(runner, tmp_path, monkeypat
     result = runner.invoke(main, ["visible", str(doubao), "-o", str(out), "--backend", "migan"])
     assert result.exit_code == 1
     assert not isinstance(result.exception, RuntimeError), "RuntimeError leaked as a traceback"
+
+
+@pytest.mark.parametrize(
+    ("name", "content"),
+    [
+        ("empty.png", b""),
+        ("notimage.jpg", b"plain text, not an image at all " * 20),
+        ("truncated.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 40),
+    ],
+)
+@pytest.mark.parametrize("cmd", [["metadata", "--remove"], ["visible", "--backend", "cv2"]])
+def test_unreadable_input_exits_cleanly(runner, tmp_path, name, content, cmd):
+    """Regression: a corrupt / empty / non-image file (real prod uploads include
+    truncated files) must produce a clean 'Error: cannot read/process' + exit 1, NOT a
+    raw PIL.UnidentifiedImageError / OSError / ValueError traceback. Found by the runtime
+    mode fuzz across metadata --remove and visible."""
+    bad = tmp_path / name
+    bad.write_bytes(content)
+    out = tmp_path / "out.png"
+    result = runner.invoke(main, [cmd[0], str(bad), "-o", str(out), *cmd[1:]])
+    assert result.exit_code == 1, result.output
+    assert isinstance(result.exception, SystemExit), f"leaked a raw traceback: {result.exception!r}"
+    assert "Error" in result.output

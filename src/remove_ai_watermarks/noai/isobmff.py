@@ -246,42 +246,39 @@ def blank_ai_exif_tokens(data: bytes) -> tuple[bytes, int]:
     ``remove_ai_metadata`` (a documented gap). This locates EXIF TIFF blocks by
     their byte-order header, **validates each with piexif** (so a coincidental
     II/MM run in pixel data is ignored -- it will not parse as a TIFF IFD), and
-    overwrites any value carrying an ``AI_GENERATOR_TOKENS`` token with spaces of
-    the SAME length. Because the replacement is same-length, every box size and
-    ``iloc`` offset stays valid and the coded image is untouched -- only the AI tag
-    content is destroyed; camera/editor EXIF without an AI token is left intact
-    (mirrors ``metadata._scrub_ai_exif`` and ``blank_ai_xmp_packets``).
+    overwrites any AI value with spaces of the SAME length. Because the replacement
+    is same-length, every box size and ``iloc`` offset stays valid and the coded image
+    is untouched -- only the AI tag content is destroyed; camera/editor EXIF without an
+    AI token is left intact. This mirrors ``metadata._scrub_ai_exif`` in what it removes
+    -- generator tokens (``Software``/``Make``/``Artist``/``ImageDescription``), the
+    China TC260 ``{"AIGC":{...}}`` block (``ImageDescription``/``UserComment``), and the
+    xAI/Grok ``Signature:`` + UUID-``Artist`` pair -- since on the ISOBMFF path this is
+    the ONLY EXIF scrubber (``_scrub_ai_exif`` never runs there), so without parity a
+    HEIC/AVIF AIGC/xAI tag is detected but not removed.
     """
     import piexif
 
-    from remove_ai_watermarks.noai.constants import AI_GENERATOR_TOKENS
+    # The AI-EXIF rule set is defined ONCE in metadata._ai_exif_targets and shared by both
+    # EXIF scrubbers (the JPEG _scrub_ai_exif pops the tag; here we blank the value bytes),
+    # so their coverage cannot drift. Imported lazily to avoid import-order coupling with
+    # metadata (which imports this module); a deliberate cross-module use, not an API leak.
+    from remove_ai_watermarks.metadata import _ai_exif_targets  # pyright: ignore[reportPrivateUsage]
 
-    ai_tags = (
-        piexif.ImageIFD.Software,
-        piexif.ImageIFD.Make,
-        piexif.ImageIFD.Artist,
-        piexif.ImageIFD.ImageDescription,
-    )
     out = bytearray(data)
     blanked = 0
     for header in _TIFF_HEADERS:
         pos = data.find(header)
         while pos != -1:
             window = bytes(out[pos : pos + _EXIF_WINDOW])
-            ifd: dict[int, Any] = {}
             try:
-                ifd = piexif.load(window).get("0th", {})
+                loaded: dict[str, Any] = piexif.load(window)
             except Exception:
-                ifd = {}
-            for tag in ai_tags:
-                value = ifd.get(tag)
-                if not isinstance(value, bytes):
-                    continue
-                if any(token in value.decode("latin1", "replace").lower() for token in AI_GENERATOR_TOKENS):
-                    # Blank the value bytes in place, within this EXIF block only.
-                    vpos = out.find(value, pos, pos + _EXIF_WINDOW)
-                    if vpos != -1:
-                        out[vpos : vpos + len(value)] = b" " * len(value)
-                        blanked += 1
+                loaded = {}
+            for _ifd_key, _tag, value, _name in _ai_exif_targets(loaded):
+                # Blank the value bytes in place, within this EXIF block only.
+                vpos = out.find(value, pos, pos + _EXIF_WINDOW)
+                if vpos != -1:
+                    out[vpos : vpos + len(value)] = b" " * len(value)
+                    blanked += 1
             pos = data.find(header, pos + len(header))
     return bytes(out), blanked

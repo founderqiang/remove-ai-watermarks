@@ -595,6 +595,9 @@ def cmd_visible(
         except RuntimeError as e:  # e.g. a selected migan/lama backend whose extra is absent
             console.print(f"  Error: {e}")
             raise SystemExit(1) from e
+        except (ValueError, OSError) as e:  # unreadable / truncated / non-image input
+            console.print(f"  Error: cannot read image {source.name}: {e}")
+            raise SystemExit(1) from e
         elapsed = time.monotonic() - t0
         h, w = result.shape[:2]
         console.print(f"  Input:  {source.name}  ({w}x{h})")
@@ -933,7 +936,11 @@ def cmd_metadata(
             return
 
     # Remove
-    out = remove_ai_metadata(source, output, keep_standard=keep_standard)
+    try:
+        out = remove_ai_metadata(source, output, keep_standard=keep_standard)
+    except (OSError, ValueError) as e:  # unreadable / truncated / non-image (PIL raises OSError subclasses)
+        console.print(f"  Error: cannot process {source.name}: {e}")
+        raise SystemExit(1) from e
     console.print(f"  AI metadata stripped -> {out}")
 
 
@@ -1246,6 +1253,14 @@ def cmd_all(
 
 
 # ── Batch command ──
+def _passthrough_copy(img_path: Path, out_path: Path) -> None:
+    """Copy the input's pixels through to ``out_path`` unchanged (the invisible-mode skip
+    paths), so the output dir stays complete without touching the pixels."""
+    src_bgr, src_alpha = image_io.read_bgr_and_alpha(img_path)
+    if src_bgr is not None:
+        image_io.write_bgr_with_alpha(out_path, src_bgr, src_alpha)
+
+
 def _process_batch_image(
     ctx: click.Context,
     img_path: Path,
@@ -1272,16 +1287,21 @@ def _process_batch_image(
     tile_size: int = 1024,
     tile_overlap: int = 128,
     force: bool = False,
-) -> None:
+) -> bool:
     """Process a single image for batch mode.
 
     Applies the requested watermark removal steps (visible, invisible,
     metadata) to *img_path* and writes the result to *out_path*.
 
+    Returns True if the invisible (SynthID) scrub was skipped because the GPU deps
+    are missing while a signal was present -- so the batch caller can warn + exit
+    non-zero, mirroring the single ``all`` command.
+
     Raises:
         ValueError: If the image cannot be opened.
     """
     saved_alpha: NDArray[Any] | None = None
+    synthid_skipped = False
 
     if mode in ("visible", "all"):
         # Always read the ORIGINAL source: the visible pass is the first step, so a
@@ -1341,13 +1361,22 @@ def _process_batch_image(
                 # visible-processed `out_path` whose C2PA is already gone.
                 vendor=vendor_for_strength(img_path),
             )
+        elif not invisible_available() and not skip_no_signal:
+            # An invisible signal IS present but the GPU deps are missing, so the
+            # SynthID scrub cannot run. Mirror the single `all` command's loud skip:
+            # flag it for a batch-level warning + non-zero exit (a silently retained
+            # SynthID watermark is the #1 "it didn't work" report). For invisible mode
+            # nothing wrote out_path yet -> copy the input through so the output dir is
+            # complete with the pixels deliberately left intact (without this, a
+            # signal-bearing image in a GPU-less --mode invisible run got NO output).
+            synthid_skipped = True
+            if mode == "invisible" and not out_path.exists():
+                _passthrough_copy(img_path, out_path)
         elif skip_no_signal and mode == "invisible" and not out_path.exists():
             # No invisible target and the visible/all pass did not write out_path
             # (invisible mode): copy the input through so the output dir is complete
             # with the pixels deliberately left intact.
-            src_bgr, src_alpha = image_io.read_bgr_and_alpha(img_path)
-            if src_bgr is not None:
-                image_io.write_bgr_with_alpha(out_path, src_bgr, src_alpha)
+            _passthrough_copy(img_path, out_path)
 
     if mode in ("metadata", "all"):
         from remove_ai_watermarks.metadata import remove_ai_metadata
@@ -1360,6 +1389,8 @@ def _process_batch_image(
         final_bgr, _ = image_io.read_bgr_and_alpha(out_path)
         if final_bgr is not None:
             image_io.write_bgr_with_alpha(out_path, final_bgr, saved_alpha)
+
+    return synthid_skipped
 
 
 @main.command("batch")
@@ -1457,6 +1488,7 @@ def cmd_batch(
 
     processed = 0
     errors = 0
+    synthid_skipped_count = 0
 
     with Progress(
         SpinnerColumn(),
@@ -1473,7 +1505,7 @@ def cmd_batch(
             progress.update(task, description=f"{img_path.name}")
 
             try:
-                _process_batch_image(
+                if _process_batch_image(
                     ctx=ctx,
                     img_path=img_path,
                     out_path=out_path,
@@ -1499,7 +1531,8 @@ def cmd_batch(
                     tile_size=tile_size,
                     tile_overlap=tile_overlap,
                     force=force,
-                )
+                ):
+                    synthid_skipped_count += 1
                 processed += 1
 
             except Exception as e:
@@ -1510,6 +1543,21 @@ def cmd_batch(
             progress.advance(task)
 
     console.print(f"\n  {processed} processed" + (f"  {errors} errors" if errors else ""))
+
+    if synthid_skipped_count:
+        # Mirror the single `all` command: a silently retained SynthID watermark is the
+        # #1 "it didn't work" report, so make the skipped scrub impossible to miss.
+        console.print(
+            f"\n  WARNING: the invisible (SynthID) watermark was NOT removed on "
+            f"{synthid_skipped_count} image(s) -- the GPU dependencies are not installed, "
+            f"so those outputs still carry the invisible watermark.\n"
+            f"  Install the extra and rerun: pip install 'remove-ai-watermarks[gpu]'"
+        )
+
+    # Non-zero exit so a wrapping service detects an incomplete/failed run (batch used
+    # to always exit 0, hiding both per-image errors and skipped SynthID scrubs).
+    if errors or synthid_skipped_count:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

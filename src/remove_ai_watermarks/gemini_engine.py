@@ -20,6 +20,7 @@ to DETECT and to shape the removal mask -- the old reverse-alpha pixel recovery
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportMissingTypeArgument=false, reportMissingTypeStubs=false, reportMissingImports=false, reportArgumentType=false, reportAssignmentType=false, reportReturnType=false, reportCallIssue=false, reportIndexIssue=false, reportOperatorIssue=false, reportOptionalMemberAccess=false, reportOptionalCall=false, reportOptionalSubscript=false, reportOptionalOperand=false, reportAttributeAccessIssue=false, reportPrivateImportUsage=false, reportPrivateUsage=false, reportInvalidTypeForm=false, reportConstantRedefinition=false, reportUnnecessaryComparison=false
 from __future__ import annotations
 
+import functools
 import logging
 from dataclasses import dataclass
 from enum import Enum
@@ -124,6 +125,12 @@ def _load_embedded_asset(name: str) -> NDArray[Any]:
     if img is None:
         raise RuntimeError(f"Failed to decode embedded asset: {name}")
     return img
+
+
+# Single source of truth for the multi-scale template ladder (aggressively downscaled to
+# slightly upscaled): the precomputed `_tmpl_cache` and the `_scan_scales` loop must use
+# the SAME scales or a scan scale would miss the cache and KeyError.
+_TEMPLATE_SCALES: tuple[int, ...] = tuple(range(16, 120, 2))
 
 
 class GeminiEngine:
@@ -242,6 +249,16 @@ class GeminiEngine:
         self._alpha_small = _calculate_alpha_map(bg_small)
         self._alpha_large = _calculate_alpha_map(bg_large)
 
+        # Per-scale resized templates are constant (``_alpha_large`` never changes),
+        # so precompute the whole fixed 16..118 ladder once: ``_scan_scales`` runs it on
+        # every image (twice -- global + corner), and re-``resize``-ing the 96x96 source
+        # each time is pure repeated work. Prebuilt (not lazy) so the dict is read-only
+        # after construction and safe to share across threads via the module singleton.
+        self._tmpl_cache: dict[int, NDArray[Any]] = {
+            scale: cv2.resize(self._alpha_large, (scale, scale), interpolation=cv2.INTER_AREA)
+            for scale in _TEMPLATE_SCALES
+        }
+
         logger.debug(
             "Alpha maps loaded: small=%s, large=%s",
             self._alpha_small.shape,
@@ -275,11 +292,10 @@ class GeminiEngine:
         ``_alpha_large`` is the high-quality source downscaled per scale; the range
         covers aggressively downscaled to slightly upscaled logos.
         """
-        for scale in range(16, 120, 2):
+        for scale in _TEMPLATE_SCALES:
             if scale > gray.shape[0] or scale > gray.shape[1]:
                 continue
-            tmpl = cv2.resize(self._alpha_large, (scale, scale), interpolation=cv2.INTER_AREA)
-            match_res = cv2.matchTemplate(gray, tmpl, cv2.TM_CCOEFF_NORMED)
+            match_res = cv2.matchTemplate(gray, self._tmpl_cache[scale], cv2.TM_CCOEFF_NORMED)
             _, max_val, _, max_loc = cv2.minMaxLoc(match_res)
             yield scale, float(max_val), max_loc
 
@@ -360,6 +376,12 @@ class GeminiEngine:
         promoted = self._corner_promote(image, candidates[0][3] if candidates else -1.0)
         if promoted is not None:
             candidates.append(promoted)
+
+        # No candidate at any scale: the search region is smaller than the 16px template
+        # floor (an image whose short side is < 16px), so nothing is detectable. Return
+        # the empty (detected=False) result rather than dereferencing candidates[0].
+        if not candidates:
+            return result
 
         # Select the candidate with the highest full-fusion confidence (pre-FP-gate).
         best_scale, pos_x, pos_y, best_raw_ncc = candidates[0]
@@ -543,6 +565,8 @@ class GeminiEngine:
         yield no mask (reported-removed-but-unchanged). Absent ``region``, direct callers
         keep the detect-then-force behavior.
         """
+        if image is None or image.size == 0:
+            return None  # guard before to_bgr (cvtColor raises on an empty Mat); mirror detect_watermark
         image = image_io.to_bgr(image)
         h, w = image.shape[:2]
         if region is not None:
@@ -681,6 +705,18 @@ class GeminiEngine:
         return float(np.median((hi - lo) / (hi + 1.0)))
 
 
+@functools.lru_cache(maxsize=1)
+def _shared_engine() -> GeminiEngine:
+    """Process-wide default ``GeminiEngine`` singleton.
+
+    The engine holds only constant assets (embedded captures, alpha maps, the
+    precomputed template ladder) and takes the image as a method argument, so one
+    instance is reused across every ``detect_sparkle_confidence`` call instead of
+    reloading assets + recomputing alpha maps + rebuilding the template cache on
+    each of the ~34k images an ``identify`` batch scans. Output is identical."""
+    return GeminiEngine()
+
+
 def detect_sparkle_confidence(image_path: Path, *, image: NDArray[Any] | None = None) -> float | None:
     """Visible-sparkle detection confidence for a file, for provenance use.
 
@@ -698,4 +734,4 @@ def detect_sparkle_confidence(image_path: Path, *, image: NDArray[Any] | None = 
     img = image if image is not None else image_io.imread(image_path)
     if img is None:
         return None
-    return float(GeminiEngine().detect_watermark(img).confidence)
+    return float(_shared_engine().detect_watermark(img).confidence)

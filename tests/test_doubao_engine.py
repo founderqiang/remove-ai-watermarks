@@ -195,3 +195,29 @@ class TestDegenerateAndChannelInputs:
         bgra = np.zeros((2048, 2048, 4), np.uint8)
         mask = eng.footprint_mask(bgra, force=True)
         assert mask is None or mask.shape == (2048, 2048)
+
+    def test_template_match_score_guards_return_zero(self):
+        # Guards return 0.0 (never a false positive) for a mask that cannot hold a
+        # glyph: empty, narrower than min_gw, or shorter than the 4-px floor.
+        assert _template_match_score(np.zeros((0, 5), np.uint8), 1000) == 0.0
+        assert _template_match_score(np.zeros((10, 3), np.uint8), 1000) == 0.0  # width-1 < min_gw
+        assert _template_match_score(np.zeros((3, 200), np.uint8), 1000) == 0.0  # height-1 < 4
+
+    @pytest.mark.parametrize("shape", [(20, 20, 3), (10, 400, 3), (400, 10, 3), (1, 1, 3), (2000, 2000, 3)])
+    def test_locate_box_stays_in_bounds(self, shape):
+        """locate() must clamp its geometry box inside the image for ANY size/aspect --
+        wide-short, tall-narrow, 1x1, huge -- for both bottom corners (br + bl)."""
+        from remove_ai_watermarks._text_mark_engine import TextMarkEngine
+        from remove_ai_watermarks.doubao_engine import _CONFIG as BR_CONFIG
+        from remove_ai_watermarks.samsung_engine import _CONFIG as BL_CONFIG
+
+        h, w = shape[:2]
+        img = np.zeros(shape, np.uint8)
+        for cfg in (BR_CONFIG, BL_CONFIG):
+            loc = TextMarkEngine(cfg).locate(img)
+            assert loc.x >= 0
+            assert loc.y >= 0
+            assert loc.x + loc.w <= w
+            assert loc.y + loc.h <= h
+            assert loc.w > 0
+            assert loc.h > 0

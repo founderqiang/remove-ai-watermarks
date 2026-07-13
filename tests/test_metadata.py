@@ -179,6 +179,53 @@ class TestHasAiMetadata:
             assert np.array_equal(before, after), f"{name}: pixels changed (DCT was re-encoded)"
             assert not has_ai_metadata(out), f"{name}: AI metadata survived the strip"
 
+    @staticmethod
+    def _xmp_iptc_jpeg(tmp_path: Path, name: str, marker: bytes) -> Path:
+        """A real (decodable) JPEG carrying the IPTC AI marker in a well-formed APP1
+        XMP segment -- the layout Instagram/Facebook/X and MidJourney/Meta use, where
+        ``digitalSourceType`` lives in XMP rather than the APP13 IPTC-IIM record.
+        Synthetic (no corpus): a solid cv2 JPEG with the APP1 spliced in after SOI."""
+        import cv2
+        import numpy as np
+
+        real = tmp_path / f"real-{name}"
+        cv2.imwrite(str(real), np.full((32, 32, 3), 200, np.uint8), [cv2.IMWRITE_JPEG_QUALITY, 100])
+        data = real.read_bytes()
+        xmp = (
+            b"http://ns.adobe.com/xap/1.0/\x00"
+            b'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF><rdf:Description>'
+            b"<Iptc4xmpExt:DigitalSourceType>http://cv.iptc.org/newscodes/digitalsourcetype/"
+            + marker
+            + b"</Iptc4xmpExt:DigitalSourceType></rdf:Description></rdf:RDF></x:xmpmeta>"
+        )
+        seg = b"\xff\xe1" + (len(xmp) + 2).to_bytes(2, "big") + xmp
+        path = tmp_path / name
+        path.write_bytes(data[:2] + seg + data[2:])  # splice APP1 right after SOI
+        return path
+
+    @pytest.mark.parametrize("marker", [b"trainedAlgorithmicMedia", b"AISystemUsed"])
+    def test_jpeg_strip_removes_iptc_marker_in_xmp(self, tmp_path: Path, marker: bytes):
+        """Regression: the lossless JPEG strip must drop an AI-bearing APP1 XMP packet
+        when the AI signal is an IPTC ``digitalSourceType`` / 2025.1 field, not only a
+        C2PA or China-AIGC token. Before the fix these survived because the APP1 branch
+        of ``_jpeg_app_carries_ai`` checked only c2pa + AIGC markers, leaving the
+        Instagram/MidJourney/Meta 'Made with AI' XMP intact. Pixels stay bit-identical."""
+        import numpy as np
+
+        from remove_ai_watermarks import image_io
+        from remove_ai_watermarks.metadata import remove_ai_metadata
+
+        src = self._xmp_iptc_jpeg(tmp_path, "iptc-xmp.jpg", marker)
+        assert has_ai_metadata(src)  # detected before
+        before = image_io.imread(str(src))
+        out = tmp_path / "clean.jpg"
+        remove_ai_metadata(src, out)
+        after = image_io.imread(str(out))
+        assert before is not None
+        assert after is not None
+        assert np.array_equal(before, after), "pixels changed: the DCT scan was re-encoded"
+        assert not has_ai_metadata(out), "IPTC AI marker in XMP survived the strip"
+
 
 class TestC2paMarkerIn:
     """The C2PA presence check requires a JUMBF wrapper or the C2PA uuid box, so
@@ -234,6 +281,59 @@ class TestSamsungGenai:
         """An incidental genAIType token outside Samsung's editor JSON is ignored."""
         p = self._samsung_jpeg(tmp_path, "stray.jpg", b'some other blob "genAIType":1 elsewhere')
         assert samsung_genai(p) is None
+
+    def test_remove_strips_post_eoi_trailer(self, tmp_path: Path):
+        """Regression: Galaxy AI appends ``PhotoEditor_Re_Edit_Data`` as a trailer AFTER
+        the JPEG EOI, so the verbatim scan copy in the lossless strip carried it through
+        (survived 0/8 on the corpus). The strip now truncates a Samsung AI trailer at EOI;
+        pixels stay bit-identical and a non-Samsung trailer is preserved."""
+        import cv2
+        import numpy as np
+
+        from remove_ai_watermarks import image_io
+        from remove_ai_watermarks.metadata import remove_ai_metadata
+
+        real = tmp_path / "real.jpg"
+        cv2.imwrite(str(real), np.full((32, 32, 3), 180, np.uint8), [cv2.IMWRITE_JPEG_QUALITY, 100])
+        src = tmp_path / "galaxy.jpg"
+        src.write_bytes(real.read_bytes() + b'PhotoEditor_Re_Edit_Data{"genAIType":1}')
+        assert samsung_genai(src) == 1  # detected before
+        before = image_io.imread(str(src))
+        out = tmp_path / "clean.jpg"
+        remove_ai_metadata(src, out)
+        after = image_io.imread(str(out))
+        assert before is not None
+        assert after is not None
+        assert np.array_equal(before, after), "pixels changed: the DCT scan was re-encoded"
+        assert samsung_genai(out) is None, "Samsung genAIType trailer survived the strip"
+
+    def test_non_samsung_trailer_preserved(self, tmp_path: Path):
+        """A benign post-EOI trailer (e.g. an MPF block) must NOT be truncated."""
+        import cv2
+        import numpy as np
+
+        from remove_ai_watermarks.metadata import _strip_samsung_trailer
+
+        real = tmp_path / "real.jpg"
+        cv2.imwrite(str(real), np.full((16, 16, 3), 90, np.uint8))
+        tail = real.read_bytes() + b"MPF-benign-trailer-bytes"
+        assert _strip_samsung_trailer(tail) == tail
+
+    def test_detects_trailer_past_scan_window(self, tmp_path: Path):
+        """Regression: the marker is a trailer AFTER the JPEG EOI, so on a multi-MB
+        photo it sits past the 512 KB quick-scan window. Detection must read the file
+        tail too, else it disagrees with removal (which reads the whole file). A random
+        1400x1400 q100 JPEG exceeds 512 KB; the marker is only in its post-EOI tail."""
+        import cv2
+        import numpy as np
+
+        real = tmp_path / "big.jpg"
+        big = np.random.default_rng(0).integers(0, 256, (1400, 1400, 3), dtype=np.uint8)
+        cv2.imwrite(str(real), big, [cv2.IMWRITE_JPEG_QUALITY, 100])
+        assert real.stat().st_size > 512 * 1024  # trailer will be past the quick-scan window
+        p = tmp_path / "galaxy_big.jpg"
+        p.write_bytes(real.read_bytes() + b'PhotoEditor_Re_Edit_Data{"genAIType":1}')
+        assert samsung_genai(p) == 1
 
     def test_clean_image_is_none(self, tmp_clean_png):
         assert samsung_genai(tmp_clean_png) is None
@@ -300,7 +400,6 @@ class TestGetAiMetadataRealSample:
     [
         b"trainedAlgorithmicMedia",
         b"compositeSynthetic",
-        b"algorithmicMedia",
         b"compositeWithTrainedAlgorithmicMedia",
     ],
 )
@@ -309,6 +408,21 @@ def test_has_ai_metadata_detects_each_iptc_marker(tmp_path: Path, marker: bytes)
     path = tmp_path / "iptc.jpg"
     path.write_bytes(b"\xff\xd8\xff\xe1<x:xmpmeta>" + marker + b"</x:xmpmeta>\xff\xd9")
     assert has_ai_metadata(path)
+
+
+def test_bare_algorithmic_media_not_flagged_ai(tmp_path: Path):
+    """Regression: the IPTC ``algorithmicMedia`` digitalSourceType is PROCEDURAL (an
+    algorithm not trained on sampled data), NOT AI/ML generation. It must NOT be flagged
+    -- flagging it made identify assert is_ai=high + has_invisible_target=True, which
+    would trigger a diffusion scrub of clean procedural content. It is a distinct token
+    from ``trainedAlgorithmicMedia``, so real 'Made with AI' labels are unaffected."""
+    path = tmp_path / "proc.jpg"
+    path.write_bytes(
+        b"\xff\xd8\xff\xe1<x:xmpmeta><Iptc4xmpExt:DigitalSourceType>"
+        b"http://cv.iptc.org/newscodes/digitalsourcetype/algorithmicMedia"
+        b"</Iptc4xmpExt:DigitalSourceType></x:xmpmeta>\xff\xd9"
+    )
+    assert not has_ai_metadata(path)
 
 
 # ── SynthID-source detection (metadata proxy) ────────────────────────
@@ -920,6 +1034,18 @@ class TestAIGCLabel:
     def test_has_ai_metadata_detects_raw_json_exif_form(self, tmp_path: Path):
         assert has_ai_metadata(self._aigc_exif_jpeg(tmp_path))
 
+    def test_remove_strips_raw_json_exif_form(self, tmp_path: Path):
+        """Regression: the TC260 AIGC ``{"AIGC":{...}}`` block Doubao embeds in EXIF
+        UserComment must be scrubbed on removal. Before the fix it survived because
+        ``_scrub_ai_exif`` only touched Software/Make/Artist/ImageDescription in the
+        0th IFD, never UserComment in the Exif sub-IFD."""
+        from remove_ai_watermarks.metadata import aigc_label, remove_ai_metadata
+
+        out = tmp_path / "clean.jpg"
+        remove_ai_metadata(self._aigc_exif_jpeg(tmp_path), out)
+        assert aigc_label(out) is None
+        assert not has_ai_metadata(out)
+
     def _aigc_bare_jpeg(self, tmp_path: Path, producer: str = "00119144030008867405X210002") -> Path:
         """Some China-served generators glue the TC260 label straight to its JSON
         as a bare ``AIGC{...}`` blob inside a JPEG APP segment (no ``"AIGC":``
@@ -943,6 +1069,18 @@ class TestAIGCLabel:
 
     def test_has_ai_metadata_detects_bare_aigc_jpeg_form(self, tmp_path: Path):
         assert has_ai_metadata(self._aigc_bare_jpeg(tmp_path))
+
+    def test_remove_strips_bare_aigc_jpeg_form(self, tmp_path: Path):
+        """Regression: a bare ``AIGC{...}`` blob in a non-standard JPEG APP segment
+        (APP9 here) is detected by aigc_label, so removal must drop that segment too.
+        Before the fix ``_jpeg_app_carries_ai`` only inspected APP11/APP1-XMP/APP13, so
+        the blob survived the lossless strip (detection<->removal parity break)."""
+        from remove_ai_watermarks.metadata import aigc_label, remove_ai_metadata
+
+        out = tmp_path / "clean.jpg"
+        remove_ai_metadata(self._aigc_bare_jpeg(tmp_path), out)
+        assert aigc_label(out) is None
+        assert not has_ai_metadata(out)
 
     def test_bare_aigc_without_tc260_field_ignored(self, tmp_path: Path):
         """A bare ``AIGC{...}`` blob with no TC260 field must not false-positive."""
@@ -1191,6 +1329,27 @@ class TestLateProvenanceBox:
         p = tmp_path / "not.bin"
         p.write_bytes(b"\x89PNG\r\n\x1a\n not an isobmff file")
         assert scan_c2pa_region(p) == b""
+
+    def test_scan_c2pa_region_reads_largesize_uuid(self, tmp_path: Path):
+        """A 64-bit largesize (size32 == 1) uuid box must be walked and collected."""
+        import struct
+
+        from remove_ai_watermarks.noai.isobmff import scan_c2pa_region
+
+        payload = b"LARGESIZE-C2PA-MANIFEST"
+        total = 16 + len(payload)  # 4 (size32=1) + 4 (type) + 8 (largesize) + payload
+        uuid_box = struct.pack(">I", 1) + b"uuid" + struct.pack(">Q", total) + payload
+        p = tmp_path / "large.mp4"
+        p.write_bytes(_MP4_FTYP + uuid_box)
+        assert payload in scan_c2pa_region(p)
+
+    def test_scan_c2pa_region_caps_at_max_total(self, tmp_path: Path):
+        """The collected payload is bounded by ``max_total`` (never unbounded)."""
+        from remove_ai_watermarks.noai.isobmff import scan_c2pa_region
+
+        p = tmp_path / "big.mp4"
+        p.write_bytes(_MP4_FTYP + _box(b"uuid", b"A" * 5000))
+        assert len(scan_c2pa_region(p, max_total=1000)) <= 1000
 
     def test_front_placed_manifest_still_detected(self, tmp_path: Path):
         # Regression: a faststart MP4 (manifest before mdat) is unaffected.

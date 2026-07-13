@@ -145,7 +145,11 @@ def _encode_params(ext: str) -> list[int]:
             params += [sf, sf444]
         return params
     if ext == ".webp":
-        return [cv2.IMWRITE_WEBP_QUALITY, 100]
+        # cv2 WebP: quality 1-100 is LOSSY; a value > 100 selects LOSSLESS mode.
+        # "work with originals" requires lossless so a mark-removal re-encode does not
+        # degrade the untouched pixels the fill composites over (regression: q100
+        # round-tripped a random image at maxdiff ~230, q101 at 0).
+        return [cv2.IMWRITE_WEBP_QUALITY, 101]
     return []
 
 

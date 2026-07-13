@@ -41,11 +41,14 @@ def apply_analog_humanizer(image: NDArray, grain_intensity: float = 4.0, chromat
     # Shift R channel left, B channel right. np.roll is circular, so it wraps
     # the opposite edge into a thin colored fringe at the L/R borders; replicate
     # the original edge columns there to keep the intended offset interior-only.
-    if chromatic_shift > 0:
-        r = np.roll(r, -chromatic_shift, axis=1)
-        r[:, -chromatic_shift:] = r[:, -chromatic_shift - 1 : -chromatic_shift]
-        b = np.roll(b, chromatic_shift, axis=1)
-        b[:, :chromatic_shift] = b[:, chromatic_shift : chromatic_shift + 1]
+    # Clamp so the edge-replication slices below always have a source column: a shift
+    # >= width would leave them empty and crash the broadcast (r[:, -shift:] = (H, 0)).
+    shift = min(chromatic_shift, image.shape[1] - 1)
+    if shift > 0:
+        r = np.roll(r, -shift, axis=1)
+        r[:, -shift:] = r[:, -shift - 1 : -shift]
+        b = np.roll(b, shift, axis=1)
+        b[:, :shift] = b[:, shift : shift + 1]
 
     merged = cv2.merge((b, g, r))
 

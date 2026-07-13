@@ -299,6 +299,19 @@ _AI_VENDOR_TOKENS: tuple[tuple[str, str], ...] = (
     ("grok", "xAI"),
     ("aurora", "xAI"),
     ("xai", "xAI"),
+    # ByteDance family (all its brands normalize to one origin, mirroring constants.py):
+    # without these a transplanted ByteDance C2PA manifest next to an independent
+    # conflicting stamp went undetected by the clash check.
+    ("bytedance", "ByteDance"),
+    ("doubao", "ByteDance"),
+    ("jimeng", "ByteDance"),
+    ("dreamina", "ByteDance"),
+    ("volcengine", "ByteDance"),
+    ("volcano engine", "ByteDance"),
+    ("canva", "Canva"),
+    ("elevenlabs", "ElevenLabs"),
+    ("eleven labs", "ElevenLabs"),
+    ("black forest", "Black Forest Labs"),
 )
 
 
@@ -328,6 +341,17 @@ def _vendor_of(text: str | None) -> str | None:
 _C2PA_MANIFEST_SOURCE = "c2pa_manifest"
 _CLASH_SOURCE: dict[str, str] = {"c2pa": _C2PA_MANIFEST_SOURCE, "synthid": _C2PA_MANIFEST_SOURCE}
 
+# The generic China TC260 AIGC vendor label -- a COUNTRY-LEVEL regulatory "this is AI"
+# stamp any Chinese generator applies to its own output, naming no specific vendor.
+_GENERIC_AIGC_VENDOR = "China AIGC (TC260)"
+# Vendors that apply the TC260 label to their OWN output. When one is co-attributed with
+# the generic AIGC label, the label is that vendor's own stamp (not an independent
+# competing origin), so the clash check attributes the AIGC label to it -- else a legit
+# ByteDance/Doubao image (C2PA "ByteDance" + its own TC260 label) would false-clash once
+# ByteDance normalizes via _vendor_of. Chinese generators only (Canva/BFL/ElevenLabs,
+# also added to _vendor_of, are NOT TC260 appliers).
+_TC260_VENDORS: frozenset[str] = frozenset({"ByteDance"})
+
 
 def _integrity_clashes(
     ai_vendors: dict[str, str], camera_label: str | None, *, camera_has_ai_marker: bool
@@ -352,6 +376,18 @@ def _integrity_clashes(
     # families clash only when they belong to different provenance sources (see
     # _CLASH_SOURCE) AND name different vendors -- so multiple vendors named within
     # one C2PA manifest (c2pa issuer + synthid proxy) do not flag.
+    # The generic TC260 AIGC label is a Chinese regulatory "this is AI" stamp. When a
+    # Chinese TC260-applying vendor (ByteDance) is ALSO attributed, the label is that
+    # vendor's own stamp on its own output, so attribute it to that vendor -- a legit
+    # Doubao image carries BOTH a ByteDance C2PA manifest and its own TC260 label and
+    # must not clash. Against a NON-TC260 vendor (OpenAI, Google, ...) the label stays
+    # generic and still clashes as a laundering tell (a foreign-vendor image carrying a
+    # Chinese TC260 label names two different origins).
+    if ai_vendors.get("aigc") == _GENERIC_AIGC_VENDOR:
+        own = next((v for f, v in ai_vendors.items() if f != "aigc" and v in _TC260_VENDORS), None)
+        if own:
+            ai_vendors = {**ai_vendors, "aigc": own}  # copy co-located with the relabel
+
     source = {fam: _CLASH_SOURCE.get(fam, fam) for fam in ai_vendors}
     independent_conflict = any(
         source[a] != source[b] and ai_vendors[a] != ai_vendors[b] for a, b in itertools.combinations(ai_vendors, 2)
@@ -625,7 +661,7 @@ def identify(image_path: Path, *, check_visible: bool = True, check_invisible: b
         watermarks.append("China AIGC label (TC260 standard)")
         if platform is None:
             platform = "China AIGC-labeled generator (TC260; e.g. Doubao)"
-        ai_vendor_claims["aigc"] = "China AIGC (TC260)"
+        ai_vendor_claims["aigc"] = _GENERIC_AIGC_VENDOR
 
     # ── Local diffusion parameters (Stable Diffusion / ComfyUI) ──────
     local_keys = sorted(k for k in meta if k.lower() in _LOCAL_GEN_KEYS)
