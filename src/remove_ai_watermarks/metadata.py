@@ -1054,6 +1054,28 @@ def _strip_jpeg_metadata_lossless(source_path: Path, output_path: Path) -> bool:
     return True
 
 
+# Fallback extension -> PIL save format, used only when the content sniff is
+# inconclusive (never for JPEG re-encode of lossless content).
+_EXT_TO_PIL_FORMAT = {".jpg": "JPEG", ".jpeg": "JPEG", ".webp": "WEBP", ".png": "PNG"}
+
+
+def _sniff_image_format(head: bytes) -> str | None:
+    """Actual raster format from a file's leading magic bytes (>= 12 bytes), as a PIL
+    format name ("JPEG"/"PNG"/"WEBP"), or None when unrecognized. The file EXTENSION is
+    unreliable: ~2% of real uploads carry a mismatched one (a PNG served as ``.jpg`` is
+    common). Choosing the save format by extension re-encodes a lossless PNG/WebP into a
+    real JPEG, silently degrading the pixels -- so the strip routes on content instead.
+    ISOBMFF/GIF are handled before this point or fall through to PNG; only the
+    lossy-vs-lossless distinction that matters here is resolved."""
+    if head[:2] == b"\xff\xd8":
+        return "JPEG"
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return "PNG"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "WEBP"
+    return None
+
+
 def remove_ai_metadata(
     source_path: Path,
     output_path: Path | None = None,
@@ -1121,6 +1143,12 @@ def remove_ai_metadata(
     if source_path.suffix.lower() in _FFMPEG_STRIP_EXTS:
         return _strip_with_ffmpeg(source_path, output_path)
 
+    # Route on the ACTUAL content format, not the extension (which lies on ~2% of real
+    # uploads -- a PNG served as .jpg, etc.). Trusting the extension would push a
+    # lossless PNG/WebP through the lossy JPEG re-encode below just because its name
+    # ends .jpg, breaking the "work with originals" invariant.
+    true_fmt = _sniff_image_format(head)  # reuse the 12 bytes already read above
+
     # JPEG: strip AI metadata at the byte level so the DCT scan (the pixels) is NOT
     # re-encoded. The PIL open+save path below is lossy for JPEG (a q95 re-encode that
     # would undo the quality-preserving writes of the removal pipelines); this keeps a
@@ -1128,11 +1156,7 @@ def remove_ai_metadata(
     # non-parseable JPEG. Only when keep_standard: the lossless walk drops AI segments
     # but preserves standard ones, so a keep_standard=False caller (strip EVERYTHING)
     # must use the full re-encode path below instead.
-    if (
-        keep_standard
-        and output_path.suffix.lower() in (".jpg", ".jpeg")
-        and _strip_jpeg_metadata_lossless(source_path, output_path)
-    ):
+    if keep_standard and true_fmt == "JPEG" and _strip_jpeg_metadata_lossless(source_path, output_path):
         return output_path
 
     # Fail-safe for a truncated / corrupt image: PIL raises OSError when it decodes a
@@ -1155,11 +1179,19 @@ def remove_ai_metadata(
     # Read image and filter metadata
     with Image.open(source_path) as img:
         img = img.copy()
-        fmt = output_path.suffix.lower()
+        # Pick the save format. Honor the caller's output extension (so a deliberate
+        # source.png -> output.jpg conversion still works) UNLESS the SOURCE is misnamed
+        # -- a lossless PNG/WebP whose extension lies (served as .jpg). There the output
+        # extension only inherited the source's wrong name, so re-encoding to JPEG would
+        # silently degrade an original; preserve the true content format instead.
+        source_ext_fmt = _EXT_TO_PIL_FORMAT.get(source_path.suffix.lower())
+        if true_fmt is not None and true_fmt != source_ext_fmt:
+            fmt = true_fmt  # misnamed source: never let a lying extension force a re-encode
+        else:
+            fmt = _EXT_TO_PIL_FORMAT.get(output_path.suffix.lower()) or true_fmt or "PNG"
 
-        save_kwargs: dict[str, Any] = {}
-        if fmt in (".jpg", ".jpeg"):
-            save_kwargs["format"] = "JPEG"
+        save_kwargs: dict[str, Any] = {"format": fmt}
+        if fmt == "JPEG":
             # JPEG output is unavoidably lossy, so minimize the loss: high quality
             # and no chroma subsampling (4:4:4). Without these PIL defaults to
             # quality 75 + 4:2:0, which visibly degrades a re-saved image.
@@ -1167,15 +1199,12 @@ def remove_ai_metadata(
             save_kwargs["subsampling"] = 0
             if img.mode in ("RGBA", "P"):
                 img = img.convert("RGB")
-        elif fmt == ".webp":
+        elif fmt == "WEBP":
             # Preserve the WebP container losslessly instead of silently rewriting
             # it as PNG (which changes the format and bloats the file).
-            save_kwargs["format"] = "WEBP"
             save_kwargs["lossless"] = True
             if img.mode == "P":  # WebP cannot encode palette mode
                 img = img.convert("RGBA" if "transparency" in img.info else "RGB")
-        else:
-            save_kwargs["format"] = "PNG"
 
         # Collect non-AI metadata
         kept_meta: dict[str, str] = {}

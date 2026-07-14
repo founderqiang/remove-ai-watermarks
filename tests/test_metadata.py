@@ -179,6 +179,37 @@ class TestHasAiMetadata:
             assert np.array_equal(before, after), f"{name}: pixels changed (DCT was re-encoded)"
             assert not has_ai_metadata(out), f"{name}: AI metadata survived the strip"
 
+    def test_strip_preserves_lossless_content_with_mismatched_extension(self, tmp_path: Path):
+        """F1 regression: the save format is chosen by CONTENT, not the file extension.
+        A PNG served with a .jpg name (common on real uploads -- ~1% of the corpus is a
+        PNG/WebP under a .jpg extension) must be stripped losslessly as PNG, NOT
+        re-encoded into a real JPEG. The extension-driven path silently degraded it,
+        breaking the 'work with originals' invariant."""
+        import numpy as np
+        from PIL import Image
+        from PIL.PngImagePlugin import PngInfo
+
+        from remove_ai_watermarks import image_io
+        from remove_ai_watermarks.metadata import remove_ai_metadata
+
+        # Random noise: JPEG (even q95 4:4:4) provably shifts it; PNG stays exact.
+        arr = np.random.default_rng(0).integers(0, 256, (64, 64, 3), dtype=np.uint8)
+        info = PngInfo()
+        info.add_text("parameters", "Stable Diffusion prompt")  # an AI-provenance key
+        src = tmp_path / "actually_png.jpg"  # PNG bytes under a .jpg name
+        Image.fromarray(arr).save(src, format="PNG", pnginfo=info)
+        assert has_ai_metadata(src)
+
+        out = tmp_path / "cleaned.jpg"
+        remove_ai_metadata(src, out)
+
+        before = image_io.imread(str(src))
+        after = image_io.imread(str(out))
+        assert before is not None
+        assert after is not None
+        assert np.array_equal(before, after), "misnamed PNG was lossily re-encoded to JPEG"
+        assert not has_ai_metadata(out), "AI metadata survived the strip"
+
     @staticmethod
     def _xmp_iptc_jpeg(tmp_path: Path, name: str, marker: bytes) -> Path:
         """A real (decodable) JPEG carrying the IPTC AI marker in a well-formed APP1
