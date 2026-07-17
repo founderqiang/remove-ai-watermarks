@@ -12,6 +12,7 @@ import contextlib
 import json
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
@@ -311,8 +312,9 @@ _visible_sensitivity_option = click.option(
     help="How hard to trust a borderline mark. auto: relax a mark only when metadata "
     "or a same-product sibling mark corroborates it (safe; clean images untouched). "
     "strict: high-precision visual gate only, never relaxed. assume-ai: treat the "
-    "image as AI and relax every mark (best recall on metadata-stripped screenshots, "
-    "at the cost of a small fill on some clean corners).",
+    "image as AI and relax every mark, keeping a confidence floor where the vendor is "
+    "unconfirmed (best recall on metadata-stripped screenshots; a clean image is still "
+    "left untouched).",
 )
 
 
@@ -525,6 +527,113 @@ def main(ctx: click.Context, verbose: bool) -> None:
 
 
 # ── Visible (Gemini) watermark removal ──
+def _run_visible_auto(
+    source: Path,
+    output: Path,
+    *,
+    backend: watermark_registry.Backend,
+    sensitivity: watermark_registry.Sensitivity,
+    strip_metadata: bool,
+) -> None:
+    """Run the registry-wide visible pass and render its CLI result."""
+    from remove_ai_watermarks import api
+
+    t0 = time.monotonic()
+    try:
+        with console.status("Detecting & removing visible marks..."):
+            result, removed = api.remove_visible(
+                str(source),
+                str(output),
+                sensitivity=sensitivity,
+                backend=backend,
+                strip_metadata=strip_metadata,
+                write_noop=False,
+            )
+    except RuntimeError as e:  # selected migan/lama backend whose extra is absent
+        console.print(f"  Error: {e}")
+        raise SystemExit(1) from e
+    except (ValueError, OSError) as e:  # unreadable / truncated / non-image input
+        console.print(f"  Error: cannot read image {source.name}: {e}")
+        raise SystemExit(1) from e
+
+    elapsed = time.monotonic() - t0
+    h, w = result.shape[:2]
+    console.print(f"  Input:  {source.name}  ({w}x{h})")
+    if not removed:
+        # write_noop=False means nothing was written, so a pre-existing output is intact.
+        console.print("  No known visible mark detected (gemini / doubao / jimeng / jimeng-pill / samsung).")
+        _no_visible_mark_exit(source, sensitivity=sensitivity)
+    console.print(f"  Removed: {', '.join(removed)}")
+    size_kb = output.stat().st_size / 1024
+    console.print(f"  Saved: {output}  ({size_kb:.0f} KB, {elapsed:.2f}s)")
+
+
+def _run_visible_explicit(
+    ctx: click.Context,
+    source: Path,
+    output: Path,
+    *,
+    detect: bool,
+    mark: str,
+    backend: watermark_registry.Backend,
+    sensitivity: watermark_registry.Sensitivity,
+    resolved_backend: str,
+    strip_metadata: bool,
+) -> None:
+    """Run one explicitly selected visible-mark detector/remover."""
+    image, alpha = image_io.read_bgr_and_alpha(source)
+    if image is None:
+        console.print(f"Error: Failed to read image: {source}")
+        raise SystemExit(1)
+    h, w = image.shape[:2]
+    console.print(f"  Input:  {source.name}  ({w}x{h})")
+
+    provenance = _visible_provenance(source)
+    target = "gemini" if mark == "auto" else mark  # --no-detect auto: gemini fallback
+    chosen = watermark_registry.get_mark(target)
+    # A single explicit mark has no sibling corroboration. Keep its trust resolution
+    # aligned with the registry arbiter, including the assumption-only floor.
+    trust = watermark_registry.resolve_trust(
+        chosen.key,
+        sensitivity=sensitivity,
+        provenance=provenance,
+        strict_keys=set(),
+    )
+    relax = trust != "strict"
+    detection = chosen.detect(image, provenance=relax)
+    if trust == "assumed" and not watermark_registry.assumed_floor_ok(chosen.key, detection.confidence):
+        relax = False
+        detection = chosen.detect(image, provenance=False)
+    if detect and not detection.detected:
+        console.print(f"  {chosen.label} not detected  (conf {detection.confidence:.2f}). Use --no-detect to force.")
+        _no_visible_mark_exit(source, sensitivity=sensitivity)
+    if detection.detected:
+        console.print(f"  {chosen.label} detected  ({chosen.location}, conf {detection.confidence:.2f})")
+
+    t0 = time.monotonic()
+    try:
+        with console.status(f"Removing {chosen.label}... ({resolved_backend})"):
+            result, _ = chosen.remove(image, backend=backend, provenance=relax, force=not detect)
+    except RuntimeError as e:  # selected migan/lama backend whose extra is absent
+        console.print(f"  Error: {e}")
+        raise SystemExit(1) from e
+    elapsed = time.monotonic() - t0
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    image_io.write_bgr_with_alpha(output, result, alpha)
+    if strip_metadata:
+        try:
+            from remove_ai_watermarks.metadata import remove_ai_metadata
+
+            remove_ai_metadata(output, output)
+        except Exception as e:
+            if ctx.obj.get("verbose"):
+                console.print(f"  Warning: Failed to strip metadata: {e}")
+
+    size_kb = output.stat().st_size / 1024
+    console.print(f"  Saved: {output}  ({size_kb:.0f} KB, {elapsed:.2f}s)")
+
+
 @main.command("visible")
 @click.argument("source", type=click.Path(exists=True, path_type=Path))
 @click.option(
@@ -560,18 +669,16 @@ def cmd_visible(
     MI-GAN > cv2). ``--mark auto`` removes every detected mark in one
     pass. For arbitrary logos/objects, use ``erase``.
     """
-    from remove_ai_watermarks import watermark_registry as registry
-
     _banner()
     source = _validate_image(source)
 
     if output is None:
         output = source.with_stem(source.stem + "_clean")
 
-    bk: registry.Backend = backend  # type: ignore[assignment]
+    bk: watermark_registry.Backend = backend  # type: ignore[assignment]
     sens = _parse_sensitivity(sensitivity)
-    resolved_backend = registry.resolve_backend(bk)
-    if resolved_backend == "cv2" and not registry.inpaint_model_available():
+    resolved_backend = watermark_registry.resolve_backend(bk)
+    if resolved_backend == "cv2" and not watermark_registry.inpaint_model_available():
         console.print("  Note: using cv2 fill (install the 'migan' extra for a lightweight ONNX model).")
 
     # ``auto`` removes EVERY detected in_auto mark in one pass (a Jimeng-basic image
@@ -579,82 +686,20 @@ def cmd_visible(
     # read -> provenance -> localize/fill -> write -> metadata-strip to the library
     # entry point, so the CLI and the library go through ONE path (no drift).
     if mark == "auto" and detect:
-        from remove_ai_watermarks import api
-
-        t0 = time.monotonic()
-        try:
-            with console.status("Detecting & removing visible marks..."):
-                result, removed = api.remove_visible(
-                    str(source),
-                    str(output),
-                    sensitivity=sens,
-                    backend=bk,
-                    strip_metadata=strip_metadata,
-                    write_noop=False,
-                )
-        except RuntimeError as e:  # e.g. a selected migan/lama backend whose extra is absent
-            console.print(f"  Error: {e}")
-            raise SystemExit(1) from e
-        except (ValueError, OSError) as e:  # unreadable / truncated / non-image input
-            console.print(f"  Error: cannot read image {source.name}: {e}")
-            raise SystemExit(1) from e
-        elapsed = time.monotonic() - t0
-        h, w = result.shape[:2]
-        console.print(f"  Input:  {source.name}  ({w}x{h})")
-        if not removed:
-            # write_noop=False means nothing was written, so a pre-existing file at the
-            # output path is left intact (the no-mark contract writes nothing).
-            console.print("  No known visible mark detected (gemini / doubao / jimeng / jimeng-pill / samsung).")
-            _no_visible_mark_exit(source, sensitivity=sens)
-        console.print(f"  Removed: {', '.join(removed)}")
-        size_kb = output.stat().st_size / 1024
-        console.print(f"  Saved: {output}  ({size_kb:.0f} KB, {elapsed:.2f}s)")
+        _run_visible_auto(source, output, backend=bk, sensitivity=sens, strip_metadata=strip_metadata)
         return
 
-    # Explicit single mark (or --no-detect): needs the decoded array + the per-mark gate,
-    # so it keeps its own read/remove/write (still through the shared io + registry).
-    image, alpha = image_io.read_bgr_and_alpha(source)
-    if image is None:
-        console.print(f"Error: Failed to read image: {source}")
-        raise SystemExit(1)
-    h, w = image.shape[:2]
-    console.print(f"  Input:  {source.name}  ({w}x{h})")
-    provenance = _visible_provenance(source)
-    target = "gemini" if mark == "auto" else mark  # --no-detect auto: gemini fallback
-    chosen = registry.get_mark(target)
-    # A single explicit mark has no cross-mark pass (no sibling corroboration), so use the
-    # canonical arbiter policy with an empty strict-sibling set instead of re-deriving it
-    # inline (keeps this in lockstep with `decide`).
-    prov = registry.resolve_relax(chosen.key, sensitivity=sens, provenance=provenance, strict_keys=set())
-    det = chosen.detect(image, provenance=prov)
-    if detect and not det.detected:
-        console.print(f"  {chosen.label} not detected  (conf {det.confidence:.2f}). Use --no-detect to force.")
-        _no_visible_mark_exit(source, sensitivity=sens)
-    if det.detected:
-        console.print(f"  {chosen.label} detected  ({chosen.location}, conf {det.confidence:.2f})")
-    t0 = time.monotonic()
-    try:
-        with console.status(f"Removing {chosen.label}... ({resolved_backend})"):
-            result, _ = chosen.remove(image, backend=bk, provenance=prov, force=not detect)
-    except RuntimeError as e:  # e.g. a selected migan/lama backend whose extra is absent
-        console.print(f"  Error: {e}")
-        raise SystemExit(1) from e
-    elapsed = time.monotonic() - t0
-
-    # Save (rejoins the original alpha plane unchanged) + strip metadata.
-    output.parent.mkdir(parents=True, exist_ok=True)
-    image_io.write_bgr_with_alpha(output, result, alpha)
-    if strip_metadata:
-        try:
-            from remove_ai_watermarks.metadata import remove_ai_metadata
-
-            remove_ai_metadata(output, output)
-        except Exception as e:
-            if ctx.obj.get("verbose"):
-                console.print(f"  Warning: Failed to strip metadata: {e}")
-
-    size_kb = output.stat().st_size / 1024
-    console.print(f"  Saved: {output}  ({size_kb:.0f} KB, {elapsed:.2f}s)")
+    _run_visible_explicit(
+        ctx,
+        source,
+        output,
+        detect=detect,
+        mark=mark,
+        backend=bk,
+        sensitivity=sens,
+        resolved_backend=resolved_backend,
+        strip_metadata=strip_metadata,
+    )
 
 
 # ── Universal region eraser ──
@@ -1261,32 +1306,106 @@ def _passthrough_copy(img_path: Path, out_path: Path) -> None:
         image_io.write_bgr_with_alpha(out_path, src_bgr, src_alpha)
 
 
+@dataclass(frozen=True)
+class _BatchOptions:
+    """Validated processing options shared by every image in one batch.
+
+    Click necessarily exposes these as individual command parameters, but the
+    processing core should receive one coherent value instead of a 21-argument
+    call. Keeping the object immutable also makes it safe to reuse while the
+    batch caches model instances in ``ctx.obj``.
+    """
+
+    strength: float | None
+    steps: int
+    pipeline: str
+    device: str
+    seed: int | None
+    hf_token: str | None
+    humanize: float
+    backend: str = "auto"
+    sensitivity: str = "auto"
+    unsharp: float = 0.0
+    max_resolution: int = 0
+    min_resolution: int = 1024
+    controlnet_scale: float = 1.0
+    upscaler: str = "lanczos"
+    model: str | None = None
+    guidance_scale: float | None = None
+    adaptive_polish: bool = False
+    tile: bool = False
+    tile_size: int = 1024
+    tile_overlap: int = 128
+    force: bool = False
+
+
+def _run_batch_invisible(
+    ctx: click.Context,
+    img_path: Path,
+    out_path: Path,
+    mode: str,
+    options: _BatchOptions,
+) -> bool:
+    """Run or safely skip the invisible pass for one batch image.
+
+    Returns ``True`` only when a detectable target could not be processed because
+    the GPU dependencies are missing. The availability probe is intentionally
+    evaluated once so branching cannot observe inconsistent optional-dependency
+    state.
+    """
+    from remove_ai_watermarks.invisible_engine import is_available as invisible_available
+
+    skip_no_signal = _should_skip_invisible_scrub(options.force, img_path)
+    available = invisible_available()
+    if available and not skip_no_signal:
+        from remove_ai_watermarks.invisible_engine import InvisibleEngine
+
+        # Cache the engine in ctx.obj so the batch builds it once (pipeline is a
+        # single CLI value, constant across the run).
+        engines = ctx.obj.setdefault("_inv_engines", {})
+        if options.pipeline not in engines:
+            engines[options.pipeline] = InvisibleEngine(
+                model_id=options.model,
+                device=None if options.device == "auto" else options.device,
+                pipeline=options.pipeline,
+                hf_token=options.hf_token,
+                controlnet_conditioning_scale=options.controlnet_scale,
+            )
+        engines[options.pipeline].remove_watermark(
+            img_path if mode == "invisible" else out_path,
+            out_path,
+            strength=options.strength,
+            num_inference_steps=options.steps,
+            guidance_scale=options.guidance_scale,
+            seed=options.seed,
+            humanize=options.humanize,
+            unsharp=options.unsharp,
+            adaptive_polish=options.adaptive_polish,
+            max_resolution=options.max_resolution,
+            min_resolution=options.min_resolution,
+            upscaler=options.upscaler,
+            tile=options.tile,
+            tile_size=options.tile_size,
+            tile_overlap=options.tile_overlap,
+            # Detect the vendor from the pristine original (`img_path`), not the
+            # visible-processed `out_path` whose C2PA is already gone.
+            vendor=vendor_for_strength(img_path),
+        )
+        return False
+
+    # Invisible-only mode has no preceding visible pass to create ``out_path``.
+    # Preserve a complete output directory while deliberately leaving pixels intact.
+    if mode == "invisible" and not out_path.exists():
+        _passthrough_copy(img_path, out_path)
+    return not available and not skip_no_signal
+
+
 def _process_batch_image(
     ctx: click.Context,
     img_path: Path,
     out_path: Path,
     mode: str,
-    strength: float | None,
-    steps: int,
-    pipeline: str,
-    device: str,
-    seed: int | None,
-    hf_token: str | None,
-    humanize: float,
-    backend: str = "auto",
-    sensitivity: str = "auto",
-    unsharp: float = 0.0,
-    max_resolution: int = 0,
-    min_resolution: int = 1024,
-    controlnet_scale: float = 1.0,
-    upscaler: str = "lanczos",
-    model: str | None = None,
-    guidance_scale: float | None = None,
-    adaptive_polish: bool = False,
-    tile: bool = False,
-    tile_size: int = 1024,
-    tile_overlap: int = 128,
-    force: bool = False,
+    options: _BatchOptions,
 ) -> bool:
     """Process a single image for batch mode.
 
@@ -1312,71 +1431,21 @@ def _process_batch_image(
         if image is None:
             raise ValueError("Failed to read image")
 
-        result, _ = _remove_visible_auto(image, source_path=img_path, backend=backend, sensitivity=sensitivity)
+        result, _ = _remove_visible_auto(
+            image,
+            source_path=img_path,
+            backend=options.backend,
+            sensitivity=options.sensitivity,
+        )
 
         image_io.write_bgr_with_alpha(out_path, result, alpha)
         saved_alpha = alpha
 
     if mode in ("invisible", "all"):
-        from remove_ai_watermarks.invisible_engine import (
-            is_available as invisible_available,
-        )
-
         # Skip the destructive regeneration when no invisible watermark is locally
         # detectable (would only degrade a clean image). Read the pristine `img_path`;
         # `out_path` may already be the visible-processed result. --force overrides.
-        skip_no_signal = _should_skip_invisible_scrub(force, img_path)
-        if invisible_available() and not skip_no_signal:
-            from remove_ai_watermarks.invisible_engine import InvisibleEngine
-
-            # Cache the engine in ctx.obj so the batch builds it once (pipeline is a
-            # single CLI value, constant across the run).
-            engines = ctx.obj.setdefault("_inv_engines", {})
-            if pipeline not in engines:
-                engines[pipeline] = InvisibleEngine(
-                    model_id=model,
-                    device=None if device == "auto" else device,
-                    pipeline=pipeline,
-                    hf_token=hf_token,
-                    controlnet_conditioning_scale=controlnet_scale,
-                )
-            engine_inv = engines[pipeline]
-            engine_inv.remove_watermark(
-                img_path if mode == "invisible" else out_path,
-                out_path,
-                strength=strength,
-                num_inference_steps=steps,
-                guidance_scale=guidance_scale,
-                seed=seed,
-                humanize=humanize,
-                unsharp=unsharp,
-                adaptive_polish=adaptive_polish,
-                max_resolution=max_resolution,
-                min_resolution=min_resolution,
-                upscaler=upscaler,
-                tile=tile,
-                tile_size=tile_size,
-                tile_overlap=tile_overlap,
-                # Detect the vendor from the pristine original (`img_path`), not the
-                # visible-processed `out_path` whose C2PA is already gone.
-                vendor=vendor_for_strength(img_path),
-            )
-        elif not invisible_available() and not skip_no_signal:
-            # An invisible signal IS present but the GPU deps are missing, so the
-            # SynthID scrub cannot run. Mirror the single `all` command's loud skip:
-            # flag it for a batch-level warning + non-zero exit (a silently retained
-            # SynthID watermark is the #1 "it didn't work" report). For invisible mode
-            # nothing wrote out_path yet -> copy the input through so the output dir is
-            # complete with the pixels deliberately left intact (without this, a
-            # signal-bearing image in a GPU-less --mode invisible run got NO output).
-            synthid_skipped = True
-            if mode == "invisible" and not out_path.exists():
-                _passthrough_copy(img_path, out_path)
-        elif skip_no_signal and mode == "invisible" and not out_path.exists():
-            # No invisible target and the visible/all pass did not write out_path
-            # (invisible mode): copy the input through so the output dir is complete
-            # with the pixels deliberately left intact.
-            _passthrough_copy(img_path, out_path)
+        synthid_skipped = _run_batch_invisible(ctx, img_path, out_path, mode, options)
 
     if mode in ("metadata", "all"):
         from remove_ai_watermarks.metadata import remove_ai_metadata
@@ -1485,6 +1554,29 @@ def cmd_batch(
     if mode in ("invisible", "all"):
         _warn_if_esrgan_unavailable(upscaler)
     adaptive_polish = _resolve_auto_polish(auto, adaptive_polish)
+    options = _BatchOptions(
+        strength=strength,
+        steps=steps,
+        pipeline=pipeline,
+        device=device,
+        seed=seed,
+        hf_token=hf_token,
+        humanize=humanize,
+        backend=backend,
+        sensitivity=sensitivity,
+        unsharp=unsharp,
+        max_resolution=max_resolution,
+        min_resolution=min_resolution,
+        controlnet_scale=controlnet_scale,
+        upscaler=upscaler,
+        model=model,
+        guidance_scale=guidance_scale,
+        adaptive_polish=adaptive_polish,
+        tile=tile,
+        tile_size=tile_size,
+        tile_overlap=tile_overlap,
+        force=force,
+    )
 
     processed = 0
     errors = 0
@@ -1510,27 +1602,7 @@ def cmd_batch(
                     img_path=img_path,
                     out_path=out_path,
                     mode=mode,
-                    strength=strength,
-                    steps=steps,
-                    pipeline=pipeline,
-                    device=device,
-                    seed=seed,
-                    hf_token=hf_token,
-                    humanize=humanize,
-                    backend=backend,
-                    sensitivity=sensitivity,
-                    unsharp=unsharp,
-                    max_resolution=max_resolution,
-                    min_resolution=min_resolution,
-                    controlnet_scale=controlnet_scale,
-                    upscaler=upscaler,
-                    model=model,
-                    guidance_scale=guidance_scale,
-                    adaptive_polish=adaptive_polish,
-                    tile=tile,
-                    tile_size=tile_size,
-                    tile_overlap=tile_overlap,
-                    force=force,
+                    options=options,
                 ):
                     synthid_skipped_count += 1
                 processed += 1

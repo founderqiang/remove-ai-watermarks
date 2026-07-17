@@ -50,15 +50,23 @@ Backend = Literal["auto", "cv2", "migan", "lama"]
 #     a clean corner). Lowest recall on faint/moved marks.
 #   * ``auto`` (default): relax a mark's gate ONLY when the image carries same-product
 #     evidence the mark is there -- metadata provenance for that vendor, or a confidently
-#     detected sibling mark of the same product (see ``resolve_relax``). No evidence ->
+#     detected sibling mark of the same product (see ``resolve_trust``). No evidence ->
 #     stays strict. Safe: it only escalates where the mark is corroborated.
 #   * ``assume_ai``: relax every mark's gate regardless of evidence -- the caller asserts
 #     the image is AI and wants the mark gone (e.g. a metadata-stripped screenshot uploaded
-#     to a watermark remover). Recovers the faint/moved marks the strict gate demotes
-#     (~49% -> ~89% Gemini recall, corpus-measured), at the cost of a harmless small fill
-#     on some clean corners. The library CANNOT infer this from a stripped image -- only the
-#     caller's out-of-band context (the user uploaded to remove a mark) justifies it.
+#     to a watermark remover). Recovers the faint/moved marks the strict gate demotes. The
+#     library CANNOT infer this from a stripped image -- only the caller's out-of-band
+#     context (the user uploaded to remove a mark) justifies it. An assertion that the
+#     image is AI is NOT evidence of WHICH vendor made it, so a mark relaxed on assumption
+#     alone must still clear ``_ASSUMED_CONF_FLOOR``; see that constant for why.
 Sensitivity = Literal["auto", "strict", "assume_ai"]
+
+# The trust level a mark's detection gate is resolved to (see ``resolve_trust``). The
+# split between ``assumed`` and ``confirmed`` is load-bearing: both bypass the engine's
+# false-positive gate, but only ``confirmed`` has evidence naming THIS vendor, which is
+# exactly what that bypass is documented to require (see GeminiEngine.detect_watermark's
+# ``trust_provenance`` contract). ``assumed`` therefore carries a confidence floor.
+Trust = Literal["strict", "assumed", "confirmed"]
 
 # Product family per mark, for the ``auto`` cross-mark corroboration: a confidently
 # detected mark relaxes only OTHER marks of the SAME product (different corners, one
@@ -120,6 +128,8 @@ class Candidate:
     Carries the mark's verdict at BOTH trust levels (``detected_strict`` = the
     conservative gate, ``detected_relaxed`` = the gate the engine relaxes to under
     provenance/assume), so the arbiter can pick per mark without re-running detection.
+    ``relaxed_confidence`` is the gate-bypassed detection's confidence, which the arbiter
+    needs to apply :func:`assumed_floor_ok` when a mark is relaxed on assumption alone.
     ``features`` is a generic bag of physical measurements a mark's gate may need (the
     mark owns which it reports via ``KnownMark._features``); e.g. the pill supplies
     ``footprint_flat`` (0/1). Empty for marks whose gate needs no extra evidence."""
@@ -128,6 +138,7 @@ class Candidate:
     label: str
     detected_strict: bool
     detected_relaxed: bool
+    relaxed_confidence: float
     features: dict[str, float]  # generic; both construction sites always supply it (empty when none)
 
 
@@ -446,28 +457,59 @@ def detect_marks(
     return [m.detect(image, provenance=m.key in provenance) for m in _REGISTRY if include_explicit or m.in_auto]
 
 
-def resolve_relax(
+# Minimum gate-bypassed confidence a mark must reach when it is relaxed on ASSUMPTION
+# (``assume_ai``) rather than on evidence naming its vendor. Relaxing bypasses the
+# engine's false-positive gate entirely, which is justified by vendor CONFIRMATION; an
+# assumption that the image is AI says nothing about WHICH vendor, so the bypassed
+# detector needs its own floor or it fires on ordinary content.
+#
+# Corpus-measured 2026-07-16 (256 genuine camera captures -- Make/Model/exposure/aperture
+# present and no AI token, so a Gemini sparkle cannot be there -- vs 697 Google-C2PA
+# positives, metadata used only as the label, never fed to the detector):
+#
+#     bypassed threshold   recall   false-fire on clean photos
+#              0.35         82.6%            59.8%     <- the bare detector gate
+#              0.45         66.6%            12.5%
+#              0.50         59.4%             0.0%     <- chosen
+#     strict gate          56.4%             0.0%
+#
+# So 0.35 sat on a cliff: it bought +26pp recall over strict by filling a corner on ~6
+# of every 10 CLEAN photos. At 0.50 the flag is honest -- it still beats strict, for free.
+# Marks absent from this dict relax identically at both levels; their bypassed false-fire
+# on the same negatives is under 1% (doubao 0.8%, jimeng 0.4%, samsung 0.4%).
+_ASSUMED_CONF_FLOOR: dict[str, float] = {"gemini": 0.50}
+
+
+def assumed_floor_ok(key: str, confidence: float) -> bool:
+    """Whether an ``assumed``-trust detection of ``key`` at ``confidence`` is trustworthy
+    enough to act on (see :data:`_ASSUMED_CONF_FLOOR`). Marks with no floor always pass."""
+    floor = _ASSUMED_CONF_FLOOR.get(key)
+    return floor is None or confidence >= floor
+
+
+def resolve_trust(
     key: str,
     *,
     sensitivity: Sensitivity,
     provenance: frozenset[str],
     strict_keys: set[str],
-) -> bool:
-    """Whether mark ``key``'s detection gate is relaxed (strict -> assume level).
+) -> Trust:
+    """The trust level mark ``key``'s detection gate is resolved to.
 
     The single place that turns the ``sensitivity`` policy + evidence into a per-mark
-    boolean (which the engines consume): ``strict`` never relaxes, ``assume_ai`` always
-    relaxes, and ``auto`` relaxes only on same-product evidence -- the vendor confirmed
-    by metadata (``key in provenance``) or a confidently strict-detected sibling of the
-    same product (``_PRODUCT_OF``)."""
+    level (which the engines consume as ``provenance = level != "strict"``). ``strict``
+    never relaxes. A mark is ``confirmed`` only on same-product evidence -- the vendor
+    confirmed by metadata (``key in provenance``) or a confidently strict-detected
+    sibling of the same product (``_PRODUCT_OF``). Without that evidence, ``assume_ai``
+    yields ``assumed`` (relaxed, but subject to :func:`assumed_floor_ok`) and ``auto``
+    stays ``strict``."""
     if sensitivity == "strict":
-        return False
-    if sensitivity == "assume_ai":
-        return True
-    if key in provenance:
-        return True
+        return "strict"
     product = _PRODUCT_OF[key]
-    return any(_PRODUCT_OF[k] == product for k in strict_keys if k != key)
+    confirmed = key in provenance or any(_PRODUCT_OF[k] == product for k in strict_keys if k != key)
+    if confirmed:
+        return "confirmed"
+    return "assumed" if sensitivity == "assume_ai" else "strict"
 
 
 def _keep_pill(keys: set[str], *, provenance: frozenset[str], sensitivity: Sensitivity, footprint_flat: bool) -> bool:
@@ -515,7 +557,7 @@ def _build_candidates(image: NDArray[Any]) -> list[Candidate]:
         strict = m.detect(image, provenance=False)
         relaxed = m.detect(image, provenance=True)
         feats = m.features(image) if (strict.detected or relaxed.detected) else {}
-        cands.append(Candidate(m.key, m.label, strict.detected, relaxed.detected, feats))
+        cands.append(Candidate(m.key, m.label, strict.detected, relaxed.detected, relaxed.confidence, feats))
     return cands
 
 
@@ -523,17 +565,25 @@ def decide(candidates: list[Candidate], context: Context) -> list[Decision]:
     """The removal ARBITER: a pure function turning perception + context into the
     ordered list of marks to remove (and the trust level each was accepted at).
 
-    All policy lives here, in one place: per-mark relaxation (:func:`resolve_relax`,
-    which needs the strict-detected siblings for ``auto`` cross-mark corroboration) and
-    the capture-less pill gate (:func:`_keep_pill`). No image, no I/O -- so it is
-    unit-testable in isolation and the same decision drives every caller."""
+    All policy lives here, in one place: per-mark trust resolution (:func:`resolve_trust`,
+    which needs the strict-detected siblings for ``auto`` cross-mark corroboration), the
+    assumed-trust confidence floor (:func:`assumed_floor_ok`) and the capture-less pill
+    gate (:func:`_keep_pill`). No image, no I/O -- so it is unit-testable in isolation and
+    the same decision drives every caller."""
     strict_keys = {c.key for c in candidates if c.detected_strict}
     fired: list[Decision] = []
     for c in candidates:
-        relax = resolve_relax(
+        trust = resolve_trust(
             c.key, sensitivity=context.sensitivity, provenance=context.provenance, strict_keys=strict_keys
         )
-        if c.detected_relaxed if relax else c.detected_strict:
+        relax = trust != "strict"
+        ok = c.detected_relaxed if relax else c.detected_strict
+        if trust == "assumed" and not assumed_floor_ok(c.key, c.relaxed_confidence):
+            # Relaxed on assumption alone and too weak to trust: fall back to the strict
+            # verdict rather than dropping the mark, so assume_ai is monotonic -- it only
+            # ever ADDS recall over strict, never removes less than strict would.
+            ok, relax = c.detected_strict, False
+        if ok:
             fired.append(Decision(c, relax))
     keys = {d.candidate.key for d in fired}
     if "jimeng_pill" in keys:

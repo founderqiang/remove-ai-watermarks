@@ -978,6 +978,19 @@ class TestAIGCLabel:
         assert "aigc_label" in meta
         assert "TC260" in meta["aigc_label"]
 
+    def test_empty_namespaced_label_is_still_surfaced(self, tmp_path: Path):
+        """The namespaced element is unambiguous even when its JSON object is empty."""
+        from remove_ai_watermarks.metadata import aigc_label
+
+        p = tmp_path / "empty_aigc.png"
+        Image.new("RGB", (32, 32)).save(p)
+        with open(p, "ab") as f:
+            f.write(b"<TC260:AIGC>{}</TC260:AIGC>")
+
+        assert aigc_label(p) == {}
+        assert has_ai_metadata(p)
+        assert "aigc_label" in get_ai_metadata(p)
+
     def _aigc_chunk_png(self, tmp_path: Path, producer: str = "doubao") -> Path:
         """Doubao writes the TC260 object as a PNG ``tEXt`` chunk keyed ``AIGC``
         with raw JSON (no XMP, no namespaced marker)."""

@@ -505,6 +505,42 @@ def _trustmark(image_path: Path) -> str | None:
     return detect_trustmark(image_path)
 
 
+def _collect_visible_signals(
+    image_path: Path,
+    signals: list[Signal],
+    watermarks: list[str],
+    platform: str | None,
+) -> str | None:
+    """Decode once, append every trusted visible-mark signal, and return platform.
+
+    Keeping this stage separate from metadata aggregation makes the optional cv2
+    boundary explicit and guarantees that all visible detectors share one decoded
+    BGR array. A decode failure preserves the detectors' historical fallback/no-op
+    behavior.
+    """
+    image: NDArray[Any] | None = None
+    try:
+        from remove_ai_watermarks.image_io import imread
+
+        image = imread(image_path)
+    except Exception as exc:  # cv2 missing - detectors fall back / no-op
+        logger.debug("visible-mark decode unavailable: %s", exc)
+
+    sparkle_conf = _visible_sparkle(image_path, image=image)
+    if sparkle_conf is not None and sparkle_conf >= _SPARKLE_THRESHOLD:
+        signals.append(Signal("visible_sparkle", f"NCC confidence {sparkle_conf:.2f}", "medium"))
+        watermarks.append(f"Visible Gemini sparkle (confidence {sparkle_conf:.2f})")
+        if platform is None:
+            platform = "Google Gemini family (visible sparkle detected)"
+
+    for detection in _visible_text_marks(image_path, image=image):
+        signals.append(Signal(f"visible_{detection.key}", f"NCC confidence {detection.confidence:.2f}", "medium"))
+        watermarks.append(f"Visible {detection.label} (confidence {detection.confidence:.2f})")
+        if platform is None:
+            platform = _VISIBLE_MARK_PLATFORM[detection.key]
+    return platform
+
+
 def identify(image_path: Path, *, check_visible: bool = True, check_invisible: bool = True) -> ProvenanceReport:
     """Identify an image's origin platform and watermark inventory.
 
@@ -755,36 +791,8 @@ def identify(image_path: Path, *, check_visible: bool = True, check_invisible: b
         or xai_sig
     )
 
-    # Decode the file ONCE for every visible-mark detector. The sparkle and the
-    # text-mark detectors both consume a BGR array; letting each re-read the file
-    # was two full cv2 decodes of the same bitmap, which spikes memory on a small
-    # worker. None (cv2 missing / unreadable container) makes each detector fall
-    # back to its own read, preserving the old behavior.
-    vis_image: NDArray[Any] | None = None
     if check_visible:
-        try:
-            from remove_ai_watermarks.image_io import imread
-
-            vis_image = imread(image_path)
-        except Exception as exc:  # cv2 missing - detectors fall back / no-op
-            logger.debug("visible-mark decode unavailable: %s", exc)
-
-    # ── Visible Gemini sparkle (fallback for stripped-metadata case) ─
-    sparkle_conf = _visible_sparkle(image_path, image=vis_image) if check_visible else None
-    if sparkle_conf is not None and sparkle_conf >= _SPARKLE_THRESHOLD:
-        signals.append(Signal("visible_sparkle", f"NCC confidence {sparkle_conf:.2f}", "medium"))
-        watermarks.append(f"Visible Gemini sparkle (confidence {sparkle_conf:.2f})")
-        if platform is None:
-            platform = "Google Gemini family (visible sparkle detected)"
-
-    # ── Visible Doubao / Jimeng text marks (registry; same stripped-metadata
-    #    fallback role as the Gemini sparkle above) ─
-    if check_visible:
-        for det in _visible_text_marks(image_path, image=vis_image):
-            signals.append(Signal(f"visible_{det.key}", f"NCC confidence {det.confidence:.2f}", "medium"))
-            watermarks.append(f"Visible {det.label} (confidence {det.confidence:.2f})")
-            if platform is None:
-                platform = _VISIBLE_MARK_PLATFORM[det.key]
+        platform = _collect_visible_signals(image_path, signals, watermarks, platform)
 
     visible_only = any(s.name.startswith("visible_") for s in signals) and not ai_from_metadata
     hf_only = bool(hf_job) and not ai_from_metadata

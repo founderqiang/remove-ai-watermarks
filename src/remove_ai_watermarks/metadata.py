@@ -347,7 +347,7 @@ def has_ai_metadata(image_path: Path) -> bool:
         return True
     # China TC260 AIGC label as a PNG text chunk (the byte scan above catches
     # only the XMP form; the raw-JSON tEXt chunk needs the PIL-based parse).
-    if aigc_label(image_path):
+    if aigc_label(image_path) is not None:
         return True
     # HuggingFace-hosted job marker (hf-job-id PNG text chunk).
     if huggingface_job(image_path):
@@ -887,7 +887,7 @@ def get_ai_metadata(image_path: Path) -> dict[str, str]:
             result["soft_binding"] = ", ".join(vendors)
 
     # China TC260 AI-content label (Doubao and other China-served generators).
-    if aigc := aigc_label(image_path):
+    if (aigc := aigc_label(image_path)) is not None:
         producer = aigc.get("ContentProducer", "")
         result["aigc_label"] = f"China AIGC label (TC260){f'; producer {producer}' if producer else ''}"
 

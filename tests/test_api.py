@@ -104,6 +104,24 @@ class TestVisibleProvenance:
     def test_unreadable_path_is_empty(self, tmp_path):
         assert raiw.visible_provenance(tmp_path / "missing.png") == frozenset()
 
+    def test_uses_report_signals_for_falsy_metadata_values(self, monkeypatch, tmp_path):
+        """An empty TC260 object and Samsung genAIType=0 are still present signals.
+
+        The report has already normalized those values, so the public API must not
+        re-read the file and accidentally discard them by truthiness.
+        """
+        from types import SimpleNamespace
+
+        from remove_ai_watermarks import identify
+
+        report = SimpleNamespace(
+            platform=None,
+            signals=[SimpleNamespace(name="aigc"), SimpleNamespace(name="samsung_genai")],
+        )
+        monkeypatch.setattr(identify, "identify", lambda *args, **kwargs: report)
+
+        assert raiw.visible_provenance(tmp_path / "synthetic.png") == frozenset({"doubao", "jimeng", "samsung"})
+
 
 class TestRemoveVisibleOutputPath:
     """Output-path robustness: in-place clean (#3) and a missing output dir (#4)."""
