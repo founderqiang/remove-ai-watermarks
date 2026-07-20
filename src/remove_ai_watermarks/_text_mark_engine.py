@@ -90,6 +90,13 @@ _MIN_DETECT_SHORT_SIDE = 200
 # threshold repairs that -- it needs a better detection silhouette.
 _DEFAULT_PROVENANCE_NCC_FACTOR = 0.7
 
+# Level (fraction of the response's own peak) at which the CONTINUOUS top-hat is
+# turned into a glyph blob, used only when the binarized path found nothing on a
+# mark the detector did fire on. Half the peak keeps the stroke cores and drops the
+# halo; the enclosing rectangle is what gets filled anyway, so this only has to be
+# good enough to BOUND the mark, not to segment it.
+_FAINT_GLYPH_LEVEL = 0.5
+
 
 @dataclass(frozen=True)
 class TextMarkConfig:
@@ -550,6 +557,19 @@ class TextMarkEngine:
         bx, by, bw, bh = loc.bbox
         glyph = self.extract_mask(image, loc)  # box-sized, 255 = glyph
         ys, xs = np.where(glyph > 0)
+        faint = xs.size < self._MIN_GLYPH_PIXELS and self.config.detect_frontend == "tophat"
+        # A mark found only by the CONTINUOUS front-end has no binary glyph blob to bound,
+        # so the mask came back empty and removal was a silent no-op while `identify` still
+        # reported the mark (corpus-measured 2026-07-20: 57 of 60 sampled still-detected
+        # Doubao marks were untouched, ~8% of its detections). Fall back to the same
+        # response the DETECTOR scored, thresholded relative to its own peak. Gated on an
+        # actual detection: the response is max-normalized, so on a clean corner it would
+        # normalize NOISE up to 1.0 and mask a random patch -- the detector's verdict is
+        # what separates signal from noise here.
+        if faint and self.detect(image).detected:
+            resp = self.tophat_response(image, loc)
+            if resp is not None:
+                ys, xs = np.where(resp >= _FAINT_GLYPH_LEVEL)
         if xs.size >= self._MIN_GLYPH_PIXELS:
             pad = max(4, int(0.10 * bh))
             rx1 = max(0, bx + int(xs.min()) - pad)
