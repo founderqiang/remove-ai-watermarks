@@ -488,6 +488,46 @@ bug (`scale_basis`) directly.
 This section records what the measurements imply technically. Prioritization is tracked
 separately, outside this repo.
 
+## Open items (as of 2026-07-20)
+
+Everything below is known, measured, and deliberately not done yet. Each line says what it
+would take, so none of it has to be rediscovered.
+
+### Defects
+
+| # | Defect | Measured impact | What the fix takes |
+|---|---|---|---|
+| 1 | 16-bit PNGs are downconverted to 8-bit by a metadata strip | 42 of 27,018 corpus PNGs (0.16%); one went 9.2 MB -> 2.5 MB | a byte-level PNG chunk stripper, so the PIL re-save is skipped entirely |
+| 2 | Exit code 2 means three different things (no visible mark / no invisible signal / Click usage error) | any wrapper must parse stderr to tell them apart | split the codes; **breaking for existing wrappers**, so it needs a deliberate call |
+| 3 | `visible_removal_audit.py` measures the UNGATED per-mark path | reports the pill at 32% where the product runs at 100% precision | teach it the product path (`remove_auto_marks`) for gated marks, or at minimum say so loudly in its docstring |
+
+### Dependency alert
+
+`GHSA-rrmf-rvhw-rf47` (torch, `torch.jit.script` memory corruption) is open again and
+**the reason it was dismissed no longer holds**. It was dismissed `not_used` on 2026-06-10
+partly because no patched version existed; a patched **torch 2.13.0** now does, and the
+current alert range is `<= 2.12.1`. `docs/release-and-distribution.md` still says "no
+patched torch version exists -- do not re-triage it", which is now stale. Either bump torch
+(it is transitive from the optional `gpu` extra) or re-dismiss on the remaining grounds
+(the codebase never calls `torch.jit`, grep-verified) and correct that note.
+
+### Verification tiers not run
+
+- **B2 detector response curves** -- recall as a function of size, contrast and background
+  texture on stamped marks. No labelling needed.
+- **B4 resource ceilings** -- peak RSS and wall time per backend x input size to 25 MP.
+- **E robustness** -- truncated, corrupt, absurd dimensions, decompression bombs, unicode
+  and RTL filenames, read-only output dirs, concurrent runs on one file.
+- **C recall expansion** -- gated by labelling appetite.
+
+### Recommended next step
+
+**B2, before any detector work.** Jimeng recall rests on n=14 and the pill's on n=6;
+improving what six samples measure means not knowing whether it improved. B2 is also the
+instrument that catches the geometry class of bug that has now surfaced twice -- the
+`scale_basis` landscape miss, and the detect/mask front-end mismatch that made ~8% of
+Doubao detections unremovable.
+
 ## Standing gap
 
 None of this is in `maintain.sh`, and it should not all be -- the sweeps take hours. But
