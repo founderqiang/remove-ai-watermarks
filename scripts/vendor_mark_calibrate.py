@@ -229,7 +229,7 @@ _FIT_SCALES = tuple(round(0.4 * (1.03**i), 4) for i in range(80))  # 0.40 .. ~4.
 _SHIPPED_LADDER = (0.8, 1.0, 1.25)
 
 
-def _fit_one(args: tuple[str, str]) -> dict[str, Any] | None:
+def _fit_one(args: tuple[str, str, dict[str, Any]]) -> dict[str, Any] | None:
     """Best match over the WIDE ladder, reported as a mark width in pixels.
 
     Also measures the template ASPECT at the winning width: the mark's true height is
@@ -238,14 +238,14 @@ def _fit_one(args: tuple[str, str]) -> dict[str, Any] | None:
     (that inflated the clean p99 from 0.30 to 0.58 on the 2026-07-18 attempt) and not
     inherited from doubao.
     """
-    path_str, asset = args
+    path_str, asset, overrides = args
     import cv2
     import numpy as np
 
     from remove_ai_watermarks._text_mark_engine import TextMarkEngine
     from remove_ai_watermarks.image_io import imread
 
-    cfg = build_config(asset, "fit", "width")
+    cfg = build_config(asset, "fit", "width", overrides)
     eng = TextMarkEngine(cfg)
     img = imread(path_str)
     if img is None:
@@ -269,11 +269,15 @@ def _fit_one(args: tuple[str, str]) -> dict[str, Any] | None:
         if v > best:
             best, best_gw, best_tl = v, gw, (int(tl[0]), int(tl[1]))
     # Aspect fit at the winning width: sweep gh/gw and keep the argmax. Range covers
-    # everything between samsung's 0.12 and jimeng's 0.29 house styles, plus slack.
+    # everything between samsung's 0.12 and jimeng's 0.29 house styles, plus the
+    # two-line stacked marks (Yuanbao ~0.45), plus slack.
     best_aspect = 0.0
     if best_gw > 0:
         best_gh_score = -1.0
-        for ratio in np.arange(0.12, 0.42, 0.01):
+        # Upper bound raised 0.42 -> 0.62 for two-line marks (Yuanbao's stacked block
+        # has silhouette aspect ~0.45; the old range's 0.12 floor was its own trap --
+        # the fit "won" by squashing the template to a one-line strip).
+        for ratio in np.arange(0.12, 0.62, 0.01):
             gh = max(4, int(best_gw * float(ratio)))
             if gh >= resp.shape[0]:
                 continue
@@ -299,17 +303,27 @@ def _fit_one(args: tuple[str, str]) -> dict[str, Any] | None:
     }
 
 
-def fit_geometry(paths: list[str], asset: str, workers: int, floor: float = 0.50, paths_name: str = "cohort") -> None:
+def fit_geometry(
+    paths: list[str],
+    asset: str,
+    workers: int,
+    floor: float = 0.50,
+    paths_name: str = "cohort",
+    overrides: dict[str, Any] | None = None,
+) -> None:
     """Which basis and fraction does this vendor's mark actually scale with?
 
     Only frames matching above ``floor`` are used: below it the winning size is the
     ladder's best fit to background texture, not a measurement of the mark.
+    ``overrides`` adjusts the LOCATE box for the fit (a two-line mark like Yuanbao's
+    is taller than Doubao's inherited box -- scoring it in the inherited box clips
+    the template to zero overlap).
     """
     import numpy as np
 
     rows: list[dict[str, Any]] = []
     with ProcessPoolExecutor(max_workers=workers) as ex:
-        for f in as_completed([ex.submit(_fit_one, (p, asset)) for p in paths]):
+        for f in as_completed([ex.submit(_fit_one, (p, asset, overrides or {})) for p in paths]):
             try:
                 r = f.result()
             except Exception:  # noqa: S112 -- one bad file must not kill the fit
@@ -565,7 +579,7 @@ def main() -> None:
     pos_paths, neg_paths = load_sets(a.cohort)
     if a.fit_geometry:
         print(f"cohort {a.cohort}: {len(pos_paths)} candidates")
-        fit_geometry(pos_paths, a.asset, a.workers, paths_name=name)
+        fit_geometry(pos_paths, a.asset, a.workers, paths_name=name, overrides=overrides)
         return
 
     if a.crossfire:

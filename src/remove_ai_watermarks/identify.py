@@ -447,6 +447,7 @@ _VISIBLE_MARK_PLATFORM = {
     "doubao": "ByteDance Doubao (visible 豆包AI生成 mark detected)",
     "jimeng": "ByteDance Jimeng / Dreamina (visible 即梦AI mark detected)",
     "qwen": "Alibaba Tongyi Qianwen (visible 千问AI生成 mark detected)",
+    "kling": "Kuaishou Kling (visible 可灵AI 3.0 mark detected)",
     "samsung": "Samsung Galaxy AI (visible 'Contenuti generati dall'AI' mark detected)",
 }
 

@@ -745,6 +745,49 @@ priority order:
    config -- samsung is `bl` but Latin-script and width-based). 星绘/百度 are NOT in the
    corpus in labelable quantity -- verified, do not hunt them again.
 
+   **STATUS 2026-07-21 (same day): 可灵 REGISTERED, 元宝 measured and PARKED.**
+   * **可灵 (`kling_engine.py`)** -- "可灵AI 3.0" bottom-right, strict-only, gate
+     0.35, no rival margin, shared 3-rung ladder (the mark is UNIMODAL at 0.12 of the
+     short side). Cohort-vs-clean (286 guarded clean frames): clean p99 0.304 / max
+     0.320; 9 of ~19 eyeballed visible marks fire = ~47% recall of visible marks, all
+     9 true (precision 9/9). The misses are the faint "Omni"-suffix release, the
+     latin "KlingAI 3.0" release and the version-less "可灵AI" (0.17-0.25, inside the
+     clean arm's top tail -- unreachable). Crossfire: 1/400 doubao (a 豆包 frame
+     INSIDE the kling cohort, still below gate), 0/298 jimeng, 0/286 clean. Parity
+     9/9 detect->cv2 fill->re-detect clean. A confident kling detection suppresses
+     the jimeng pill exactly like doubao's/qwen's does. The bottom-LEFT `AI生成`
+     pill variant was NOT seen in this cohort's contact sheet at registration time
+     and stays unhandled.
+   * **元宝 -- MEASURED NEGATIVE, parked.** The mark is a TWO-LINE, italic-slanted
+     block (元宝 over AI生成), ~5% of the short side. After fitting the render
+     against real tophat responses (left-align, tight gap, stroke dilation, shear
+     -0.75 -- which lifted marked frames to 0.65-0.70, at the real-vs-real ceiling
+     ~0.6), the CLEAN arm rose in lockstep (clean p99 0.643 vs cohort p50 0.472):
+     the slanted two-line template correlates with generic corner texture at the
+     same rate it gains on the mark, on BOTH the tophat and binary front-ends, in
+     wide and tight boxes, in three CJK fonts. Every separation metric measured was
+     negative. This is the 2026-07-18 千问-style wall, except it survived the
+     geometry fix: the mark is small + slanted + half-shared-tail, and no synthetic
+     template separates it on this front-end. The residual levers are a structural
+     two-line verification stage or a learned patch classifier -- both outside the
+     cheap playbook. `yuanbao_alpha.png` + its `MARK_OPTS` recipe stay in
+     `render_vendor_silhouettes.py` as the documented starting point if that lever
+     is ever built. Fit-trap found en route (now guarded): `_fit_one`'s tiny-gw NCC
+     inflation -- a sub-30px template scores spuriously high on smooth tophat
+     responses, so the auto-fit picked a degenerate 0.026 width fraction; the
+     numbers above come from a gw-floored re-fit.
+   * **cat-logo -- probe READY, parked on evidence.** The cohort (USCC
+     91110108562144110X) is 19 frames but only **2 unique carriers** (byte-unique) --
+     the xinghui rule (nothing registered off ~one frame) applies. The mark is an
+     outline cat-head + bold "AI生成", bottom-right, ~0.25 of the width, very bold.
+     A drawn synthetic silhouette (`draw_catlogo` in `render_vendor_silhouettes.py`;
+     a solid filled head scored 0.35, the outline form 0.50 -- iterated against a
+     real tophat response) separates: mark 0.50 vs a diverse clean arm max 0.333
+     (n=29 probe). Registration is a gate pick (~0.42) the moment more unique
+     carriers arrive; recall across diverse cat-logo generations is unmeasurable at
+     n=2. Fit-trap that applied here too: the mark is bigger than Doubao's box
+     (0.25 of width), so the inherited box clipped it exactly like qwen's.
+
 Do NOT restart the sweeps to "check". Their artifacts are on disk and listed under
 "Completed full runs" below; re-running costs hours and answers nothing new. The fast way
 to confirm the whole surface still works after a change is

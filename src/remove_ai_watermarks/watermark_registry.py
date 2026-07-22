@@ -21,6 +21,7 @@ Entries:
   - ``doubao`` -- ByteDance Doubao "豆包AI生成" text strip, bottom-right.
   - ``jimeng`` -- ByteDance Jimeng / Dreamina "★ 即梦AI" wordmark, bottom-right.
   - ``qwen`` -- Alibaba Tongyi Qianwen "千问AI生成" text strip, bottom-right.
+  - ``kling`` -- Kuaishou Kling "可灵AI 3.0" text strip, bottom-right.
   - ``samsung`` -- Samsung Galaxy AI "Contenuti generati dall'AI" strip, bottom-left.
   - ``jimeng_pill`` -- Jimeng-basic "AI生成" pill, top-left (capture-less).
 """
@@ -85,6 +86,7 @@ _PRODUCT_OF: dict[str, str] = {
     "jimeng": "jimeng",
     "jimeng_pill": "jimeng",  # same product as the Jimeng wordmark
     "qwen": "qwen",
+    "kling": "kling",
     "samsung": "samsung",
 }
 
@@ -359,6 +361,10 @@ def _engine(key: str) -> Any:
             from remove_ai_watermarks.qwen_engine import QwenEngine
 
             _engines[key] = QwenEngine()
+        elif key == "kling":
+            from remove_ai_watermarks.kling_engine import KlingEngine
+
+            _engines[key] = KlingEngine()
         elif key == "samsung":
             from remove_ai_watermarks.samsung_engine import SamsungEngine
 
@@ -509,6 +515,7 @@ _REGISTRY: tuple[KnownMark, ...] = (
     _text_mark("doubao", "Doubao 豆包AI生成 text", "bottom-right"),
     _text_mark("jimeng", "Jimeng 即梦AI wordmark", "bottom-right"),
     _text_mark("qwen", "Qwen 千问AI生成 text", "bottom-right"),
+    _text_mark("kling", "Kling 可灵AI 3.0 text", "bottom-right"),
     _text_mark("samsung", "Samsung Galaxy AI text", "bottom-left"),
     KnownMark("jimeng_pill", "Jimeng AI生成 pill", "top-left", True, _pill_detect, _pill_mask, _pill_features),
 )
@@ -590,7 +597,7 @@ def _keep_pill(keys: set[str], *, provenance: frozenset[str], footprint_flat: bo
     Doubao detection; a Qwen image likewise (another vendor's bottom-right mark naming
     its own product), so a confident Qwen detection suppresses the pill the same way.
     No confirmation at all -> never remove (blocks false fires on non-Jimeng content)."""
-    if "doubao" in keys or "qwen" in keys:
+    if "doubao" in keys or "qwen" in keys or "kling" in keys:
         return False
     if "jimeng" in keys:
         return True
