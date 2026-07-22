@@ -930,13 +930,10 @@ detector change, never on its own.
 
 ### Dependency alert
 
-`GHSA-rrmf-rvhw-rf47` (torch, `torch.jit.script` memory corruption) is open again and
-**the reason it was dismissed no longer holds**. It was dismissed `not_used` on 2026-06-10
-partly because no patched version existed; a patched **torch 2.13.0** now does, and the
-current alert range is `<= 2.12.1`. `docs/release-and-distribution.md` still says "no
-patched torch version exists -- do not re-triage it", which is now stale. Either bump torch
-(it is transitive from the optional `gpu` extra) or re-dismiss on the remaining grounds
-(the codebase never calls `torch.jit`, grep-verified) and correct that note.
+RESOLVED 2026-07-21. `GHSA-rrmf-rvhw-rf47` (torch, `torch.jit.script` memory corruption,
+alert range `<= 2.12.1`) is closed by the torch **2.13.0** bump (the lock already carried it;
+`uv-secure` no longer flags torch). The Dependabot alert itself may still need a manual
+close in the GitHub UI if it has not auto-resolved on the lock bump.
 
 ### Where detection work should go next
 
