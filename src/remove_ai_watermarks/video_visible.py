@@ -36,7 +36,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from remove_ai_watermarks._internal.tc260_producers import producer_codes_for_mark
+from remove_ai_watermarks._internal.tc260_producers import producer_codes_for_mark, producer_for_code
 from remove_ai_watermarks._internal.tc260_producers import tc260_producer_in as tc260_producer_in
 from remove_ai_watermarks.video import VIDEO_VISIBLE_MARKS
 from remove_ai_watermarks.video_encoding import (
@@ -540,6 +540,9 @@ def _match_template(
         template_feature = cv2.morphologyEx(template, cv2.MORPH_TOPHAT, kernel)
     scores = cv2.matchTemplate(feature, template_feature, cv2.TM_CCOEFF_NORMED)
     _, confidence, _, location = cv2.minMaxLoc(scores)
+    patch = feature[location[1] : location[1] + template_height, location[0] : location[0] + template_width]
+    if patch.size == 0 or int(patch.max()) < 8:
+        return 0.0, None
     return float(confidence), (
         x + location[0],
         y + location[1],
@@ -1632,11 +1635,15 @@ def has_bytedance_video_provenance(markers: dict[str, str]) -> bool:
     identity = " ".join(
         (
             markers.get("claim_generator", ""),
+            markers.get("ai_tool", ""),
             markers.get("issuer", ""),
         )
     ).lower()
     source_type = markers.get("source_type", "").lower()
-    return ("bytedance" in identity or "byteplus" in identity) and "trainedalgorithmicmedia" in source_type
+    return (
+        any(token in identity for token in ("bytedance", "byteplus", "spring (sg)", "dola"))
+        and "trainedalgorithmicmedia" in source_type
+    )
 
 
 def has_doubao_video_provenance(markers: dict[str, str]) -> bool:
@@ -1648,9 +1655,9 @@ def has_doubao_video_provenance(markers: dict[str, str]) -> bool:
 _VIDEO_MARK_ISSUER_TOKENS: dict[str, tuple[str, ...]] = {
     "sora": ("openai",),
     "veo": ("google",),
-    "seedance": ("bytedance", "byteplus"),
-    "doubao": ("bytedance", "byteplus"),
-    "dola": ("bytedance", "byteplus"),
+    "seedance": ("bytedance", "byteplus", "spring (sg)"),
+    "doubao": ("bytedance", "byteplus", "spring (sg)"),
+    "dola": ("bytedance", "byteplus", "spring (sg)"),
     "hailuo": ("minimax",),
     "vidu": ("shengshu", "vidu"),
     "kling": ("kling", "kuaishou"),
@@ -1674,12 +1681,10 @@ def confirms_video_provenance(mark: str, markers: dict[str, str]) -> bool:
 def contradicts_video_provenance(mark: str, markers: dict[str, str]) -> bool:
     """Whether provenance names a producer other than the visible mark's vendor.
 
-    Kling alone also reads the TC260 producer. The Kling detector's thresholds are
-    low (0.20/0.24) and it scores any white
-    Latin wordmark in the bottom-right corner: a real Vidu Q3 export (2026-09-23,
-    "Vidu AI" logo plus wordmark) scored 0.56 on the ring template and 0.37-0.40 on
-    the font templates, a stable 193/193-frame run. The same file's TC260 label
-    names Vidu's producer, so a present, non-Kling producer vetoes the visual match.
+    A present TC260 ``ContentProducer`` naming another vendor vetoes any mark whose
+    own vendor is not named: Kling scored 0.56 on a Vidu Q3 export (2026-09-23),
+    Hailuo scored 0.35 on all 146 frames of a ByteDance Jimeng video (2026-10-08),
+    and Seedance scored 0.45 on all 294 frames of two Agnes AI videos (2026-10-10).
     A missing label is not evidence either way and leaves the visual path alone.
 
     A C2PA manifest that itself claims AI generation by another vendor contradicts
@@ -1695,8 +1700,13 @@ def contradicts_video_provenance(mark: str, markers: dict[str, str]) -> bool:
     if confirms_video_provenance(mark, markers):
         return False
     producer = markers.get("aigc_producer", "").strip()
-    if mark == "kling" and producer:
-        return not tc260_producer_in(producer, producer_codes_for_mark("kling"))
+    if producer:
+        row = producer_for_code(producer)
+        if row is None:
+            return True
+        if mark in {"seedance", "dola"}:
+            return row.vendor != "ByteDance"
+        return mark not in (row.image_mark, row.video_mark)
     from remove_ai_watermarks._internal.c2pa import c2pa_credential_level
 
     issuer = markers.get("issuer", "").casefold()

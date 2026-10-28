@@ -23,7 +23,7 @@ _CONFIG = TextMarkConfig(
     detect_frontend="tophat",
     scale_basis="width",
     ladder=(0.95, 1.0, 1.05),
-    provenance_ncc_factor=1.0,
+    provenance_ncc_factor=0.90,
     min_gw=24,
 )
 

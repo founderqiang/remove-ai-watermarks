@@ -3511,3 +3511,113 @@ class TestYouTubeReencodedSamples:
         from remove_ai_watermarks.video import _video_markers_claim_ai
 
         assert _video_markers_claim_ai(markers) is expected
+
+
+class TestSignalDiscovery20261027VideoGaps:
+    @pytest.mark.parametrize(
+        ("markers", "expected_platform"),
+        [
+            (
+                {
+                    "claim_generator": "c2pa-rs",
+                    "issuer": "SPRING (SG) PTE. LTD., BytePlus (ByteDance)",
+                    "ai_tool": "Dola",
+                },
+                "ByteDance Dola",
+            ),
+            (
+                {
+                    "claim_generator": "Sync Labs sync-3",
+                    "issuer": "Sync Labs",
+                },
+                "Sync Labs",
+            ),
+            (
+                {
+                    "claim_generator": "c2patool",
+                    "issuer": "TikTok",
+                    "ai_tool": "TikTok Ad Creative Toolbox",
+                },
+                "TikTok Ad Creative Toolbox",
+            ),
+            (
+                {
+                    "claim_generator": "ttc2pa_default_claim_generator",
+                    "issuer": "TikTok",
+                    "source_type": "trainedAlgorithmicMedia (AI-generated)",
+                },
+                "TikTok (C2PA signer)",
+            ),
+            (
+                {
+                    "claim_generator": "c2pa-rs",
+                    "issuer": "BytePlus (ByteDance)",
+                    "app_provenance": "App export provenance (ByteDance Dreamina)",
+                },
+                "ByteDance Dreamina",
+            ),
+            (
+                {
+                    "aigc_label": "China AIGC label (TC260)",
+                    "aigc_producer": "001191110108MA01R70K8D10000",
+                },
+                "ByteDance Volcano Engine",
+            ),
+            (
+                {
+                    "aigc_label": "China AIGC label (TC260)",
+                    "aigc_producer": "001191320191MAKHJ19D9J00000",
+                },
+                "Agnes AI",
+            ),
+            (
+                {
+                    "aigc_label": "China AIGC label (TC260)",
+                    "aigc_producer": "00119144030008867405X210003",
+                },
+                "ByteDance Dreamina",
+            ),
+            (
+                {
+                    "workflow": '{"nodes": []}',
+                    "prompt": '{"1": {"class_type": "KSampler"}}',
+                },
+                "Stable Diffusion / local pipeline (Automatic1111, ComfyUI, InvokeAI)",
+            ),
+        ],
+    )
+    def test_video_metadata_platform_supports_newly_discovered_cohorts(
+        self,
+        markers: dict[str, str],
+        expected_platform: str,
+    ):
+        from remove_ai_watermarks.video import _platform_from_video_metadata
+
+        assert _platform_from_video_metadata(markers) == expected_platform
+
+    def test_foreign_tc260_producer_vetoes_non_matching_video_marks(self):
+        from remove_ai_watermarks.video_visible import contradicts_video_provenance
+
+        jimeng = {"aigc_producer": "00119144030008867405X210003"}
+        assert contradicts_video_provenance("hailuo", jimeng)
+        assert contradicts_video_provenance("kling", jimeng)
+        assert contradicts_video_provenance("vidu", jimeng)
+        assert contradicts_video_provenance("veo", jimeng)
+        assert contradicts_video_provenance("sora", jimeng)
+        assert not contradicts_video_provenance("seedance", jimeng)
+        assert not contradicts_video_provenance("dola", jimeng)
+
+        agnes = {"aigc_producer": "001191320191MAKHJ19D9J00000"}
+        for mark in ("sora", "veo", "seedance", "doubao", "dola", "hailuo", "vidu", "kling"):
+            assert contradicts_video_provenance(mark, agnes)
+
+    def test_flat_wall_quantization_noise_does_not_trigger_kling_top_hat_match(self):
+        from remove_ai_watermarks.video_visible import _kling_logo_template, detect_kling_frame
+
+        frame = np.full((1280, 720, 3), 221, dtype=np.uint8)
+        ring = cv2.resize(_kling_logo_template(), (24, 24), interpolation=cv2.INTER_AREA)
+        frame[1236:1260, 560:584] += (ring[:, :, None] > 0).astype(np.uint8) * 2
+
+        detection = detect_kling_frame(frame, frame_index=0)
+        assert detection.confidence == 0.0
+        assert detection.region is None

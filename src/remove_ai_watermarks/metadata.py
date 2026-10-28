@@ -1386,6 +1386,7 @@ def get_ai_metadata(image_path: Path) -> dict[str, str]:
     for key in (
         "c2pa_manifest",
         "claim_generator",
+        "ai_tool",
         "c2pa_spec",
         "issuer",
         "source_type",

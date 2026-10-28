@@ -539,11 +539,14 @@ vendor for provenance-conflict checks, with a verified pinned signer supplying
 the vendor even when the text lookup yields nothing. Verification under an
 embedded, unpinned key cannot supply this identity. Unknown producers remain
 unattributed and cannot relax a particular mark. Image platforms default to the
-generic TC260 label; a measured row can supply a more specific label, currently
-Honor. The company USCC does not identify a specific app: YOYO exports and
-other product suffixes share it. Vendor attribution is also used for conflict checks. Video
-platforms preserve the established organization labels, including Tongyi Yunqi
-for both Wan and HappyHorse.
+generic TC260 label; a measured row can supply a more specific label (Honor,
+ByteDance Volcano Engine, Tencent Yuanbao, Tencent WorkBuddy, Meitu, vivo,
+Xiaomi, and Agnes AI). The company USCC does not identify a specific app: YOYO
+exports and other product suffixes share it. Vendor attribution is also used for
+conflict checks, and a registered foreign TC260 producer vetoes a visible video
+match for another vendor's mark unless the clip's own vendor is also confirmed.
+Video platforms preserve the established organization labels, including Tongyi
+Yunqi for both Wan and HappyHorse.
 
 `tests/test_tc260_producers.py` covers all registered identities across image,
 video, and mark routing, normalizes code spellings, and checks every neighboring
@@ -835,7 +838,10 @@ Key contracts:
   key that verifies proves integrity only and adds no signal. Both reserved
   fields preserve nested objects as JSON. Honor YOYO uses `PubSd`, RSA/SHA-256
   and `TBSData.Type=Content` with a null binding hash and no content selection;
-  this form is recognized and reported as unsupported, not absent or verified.
+  Tencent Yuanbao writes a raw 64-byte hex SM2 `(r || s)` signature (decoded by
+  `parse_sm2_signature` alongside DER-encoded `SEQUENCE { INTEGER r, INTEGER s }`)
+  with `PubKey: ""` and `Cert: ""`. Both forms are recognized and reported as
+  unsupported rather than failed, with no integrity or signer-trust claim.
   Only the producer slot is checked; Honor's repeated propagator slot adds no
   independent verification. Verifications
   are memoized, since `get_ai_metadata` and the verdict check the same label.

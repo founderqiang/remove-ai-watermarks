@@ -104,3 +104,12 @@ def test_doubao_provenance_does_not_confirm_a_colored_template_shape(
     assert not DoubaoEngine().detect(colored_shape, provenance=True).detected
     monkeypatch.setattr(_OutlinedDoubaoEngine, "_outline_pixels_ok", lambda _cls, _patch: True)
     assert DoubaoEngine().detect(colored_shape, provenance=True).detected
+
+
+def test_workbuddy_provenance_relaxes_threshold_for_tencent_tc260_code() -> None:
+    from remove_ai_watermarks._internal.tc260_producers import producer_codes_for_mark
+    from remove_ai_watermarks.workbuddy_engine import WorkBuddyEngine
+
+    wb = WorkBuddyEngine().config
+    assert producer_codes_for_mark("workbuddy") == ("911101085636549482",)
+    assert (wb.detect_ncc_threshold, wb.provenance_ncc_factor) == (0.60, 0.90)

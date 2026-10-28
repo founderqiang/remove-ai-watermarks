@@ -766,8 +766,6 @@ _REGISTRY: tuple[KnownMark, ...] = (
         "bottom-right",
         platform="WorkBuddy (visible AI content disclosure)",
         manufacturer="tencent",
-        label_regime=None,
-        provenance_signals=(),
     ),
     # Samsung Galaxy AI is a device editing marker (samsung_genai), not a TC260 label.
     _text_mark(

@@ -2439,3 +2439,217 @@ class TestGooglePhotosSynthIdScope:
 
         assert any("SynthID" in mark for mark in report.watermarks)
         assert not any("Google Photos AI edit" in caveat for caveat in report.caveats)
+
+
+class TestSignalDiscovery20261027Gaps:
+    def test_active_claim_generator_precedes_mixed_certificate_issuers_and_keeps_sparkle(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        path = Path(__file__).resolve().parents[1] / "data/calibration/gemini/gemini_black_2048.png"
+        monkeypatch.setattr(
+            "remove_ai_watermarks.identify.extract_c2pa_info",
+            lambda _path: {
+                "has_c2pa": True,
+                "issuer": "Google LLC, OpenAI",
+                "claim_generator": "Google C2PA Core Generator Library",
+                "ai_tool": "GPT-4o",
+                "source_type": "compositeWithTrainedAlgorithmicMedia (AI-enhanced)",
+                "ai_source_kind": "enhanced",
+                "c2pa_validation_source": "reader",
+                "c2pa_validation_state": "Valid",
+                "c2pa_integrity": "valid",
+                "c2pa_signature": "valid",
+                "c2pa_signer_trust": "trusted",
+                "c2pa_signer_validity": "valid",
+            },
+        )
+
+        report = identify(path, check_visible=True, check_invisible=False)
+
+        assert report.is_ai_generated is True
+        assert report.platform == "Google (Gemini / Imagen)"
+        assert any("Google Gemini visible watermark" in watermark for watermark in report.watermarks)
+        assert not any("not reported as a Gemini mark" in caveat for caveat in report.caveats)
+
+    def test_neutral_c2pa_signer_is_overridden_by_detected_visible_mark(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from PIL import Image
+
+        path = tmp_path / "sparkle_only.png"
+        Image.new("RGB", (64, 64)).save(path)
+        monkeypatch.setattr("remove_ai_watermarks.identify._visible_sparkle", lambda *_a, **_kw: 0.72)
+        monkeypatch.setattr("remove_ai_watermarks.identify._visible_text_marks", lambda *_a, **_kw: [])
+        monkeypatch.setattr(
+            "remove_ai_watermarks.identify.extract_c2pa_info",
+            lambda _path: {
+                "has_c2pa": True,
+                "issuer": "Google LLC",
+                "claim_generator": "Google C2PA Core Generator Library",
+                "actions": "edited",
+                "c2pa_validation_source": "reader",
+                "c2pa_validation_state": "Valid",
+                "c2pa_integrity": "valid",
+                "c2pa_signature": "valid",
+                "c2pa_signer_trust": "trusted",
+                "c2pa_signer_validity": "valid",
+            },
+        )
+
+        report = identify(path, check_visible=True, check_invisible=False)
+
+        assert report.is_ai_generated is True
+        assert report.platform == "Google Gemini family (visible sparkle detected)"
+        assert any("Google Gemini visible watermark" in watermark for watermark in report.watermarks)
+
+    def test_tiktok_ad_creative_toolbox_manifest_store_extracts_ai_tool(self):
+        store = {
+            "active_manifest": "m1",
+            "manifests": {
+                "m1": {
+                    "claim_generator_info": [{"name": "TIKTOK AD Creative Toolbox"}],
+                    "signature_info": {"issuer": "TikTok"},
+                }
+            },
+        }
+        info = c2pa_info_from_manifest_store(store)
+        assert info.get("ai_tool") == "TikTok Ad Creative Toolbox"
+
+    @pytest.mark.parametrize(
+        ("info", "expected_platform"),
+        [
+            (
+                {
+                    "has_c2pa": True,
+                    "issuer": "SPRING (SG) PTE. LTD.",
+                    "claim_generator": "Dola",
+                    "source_type": "trainedAlgorithmicMedia (AI-generated)",
+                    "ai_source_kind": "generated",
+                },
+                "ByteDance Dola",
+            ),
+            (
+                {
+                    "has_c2pa": True,
+                    "issuer": "SPRING (SG) PTE. LTD., BytePlus (ByteDance)",
+                    "claim_generator": "c2pa-rs",
+                    "ai_tool": "Dola",
+                    "source_type": "trainedAlgorithmicMedia (AI-generated)",
+                    "ai_source_kind": "generated",
+                },
+                "ByteDance Dola",
+            ),
+            (
+                {
+                    "has_c2pa": True,
+                    "issuer": "Sync Labs",
+                    "claim_generator": "Sync Labs sync-3",
+                    "source_type": "compositeWithTrainedAlgorithmicMedia (AI-enhanced)",
+                    "ai_source_kind": "enhanced",
+                },
+                "Sync Labs",
+            ),
+            (
+                {
+                    "has_c2pa": True,
+                    "issuer": "PixelBin.io",
+                    "claim_generator": "PixelBin.io",
+                    "source_type": "compositeWithTrainedAlgorithmicMedia (AI-enhanced)",
+                    "ai_source_kind": "enhanced",
+                },
+                "PixelBin.io",
+            ),
+            (
+                {
+                    "has_c2pa": True,
+                    "issuer": "TikTok",
+                    "claim_generator": "c2patool",
+                    "ai_tool": "TikTok Ad Creative Toolbox",
+                    "source_type": "trainedAlgorithmicMedia (AI-generated)",
+                    "ai_source_kind": "generated",
+                },
+                "TikTok Ad Creative Toolbox",
+            ),
+            (
+                {
+                    "has_c2pa": True,
+                    "issuer": "ByteDance",
+                    "claim_generator": "ByteDance Media Transcode Service",
+                    "ai_tool": "Pippit",
+                    "c2pa_identity_ai": True,
+                },
+                "ByteDance Pippit AI",
+            ),
+        ],
+    )
+    def test_dola_sync_labs_pixelbin_and_tiktok_c2pa_attribution(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        info: dict[str, object],
+        expected_platform: str,
+    ):
+        from PIL import Image
+
+        path = tmp_path / "sample.png"
+        Image.new("RGB", (32, 32)).save(path)
+        monkeypatch.setattr("remove_ai_watermarks.identify.extract_c2pa_info", lambda _path: dict(info))
+
+        report = identify(path, check_visible=False, check_invisible=False)
+
+        assert report.is_ai_generated is True
+        assert report.platform == expected_platform
+
+    @pytest.mark.parametrize(
+        ("producer", "expected_platform"),
+        [
+            ("00119111010856365494821N858", "Tencent WorkBuddy"),
+            ("00119144030071526726XG00000", "Tencent Yuanbao"),
+            ("001191440101327598294H00000", "Tencent Yuanbao"),
+            ("001191350200737895515300000", "Meitu"),
+            ("001191441900557262083U10400", "vivo"),
+            ("001191110108596084056A10000", "Xiaomi"),
+        ],
+    )
+    def test_new_tc260_producers_attribute_platform(
+        self,
+        tmp_path: Path,
+        producer: str,
+        expected_platform: str,
+    ):
+        from PIL import Image
+        from PIL.PngImagePlugin import PngInfo
+
+        path = tmp_path / "tc260.png"
+        png_info = PngInfo()
+        png_info.add_text("AIGC", json.dumps({"Label": "1", "ContentProducer": producer}))
+        Image.new("RGB", (64, 64)).save(path, pnginfo=png_info)
+
+        report = identify(path, check_visible=False, check_invisible=False)
+
+        assert report.is_ai_generated is True
+        assert report.platform == expected_platform
+
+    def test_xiaomi_tc260_provenance_vetoes_false_gemini_sparkle(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from PIL import Image
+        from PIL.PngImagePlugin import PngInfo
+
+        path = tmp_path / "xiaomi_tc260.png"
+        png_info = PngInfo()
+        png_info.add_text("AIGC", json.dumps({"Label": "1", "ContentProducer": "001191110108596084056A10000"}))
+        Image.new("RGB", (64, 64)).save(path, pnginfo=png_info)
+        monkeypatch.setattr("remove_ai_watermarks.identify._visible_sparkle", lambda *_a, **_kw: 0.62)
+
+        report = identify(path, check_visible=True, check_invisible=False)
+
+        assert report.is_ai_generated is True
+        assert report.platform == "Xiaomi"
+        assert not any("Google Gemini visible watermark" in watermark for watermark in report.watermarks)
+        assert any("not reported as a Gemini mark" in caveat for caveat in report.caveats)

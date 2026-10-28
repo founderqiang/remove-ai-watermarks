@@ -18,7 +18,7 @@ The `visible` command registers these mark keys:
 | `kling` | `可灵AI 3.0` or `KlingAI 3.0` | Bottom right | Separate calibrated silhouettes cover the older CJK and current IMAGE 3.0 Latin variants; a glyph-detail gate rejects plain UI boundaries. |
 | `yuanbao` | `元宝` over `AI生成` | Bottom right | Separate strict and provenance-corroborated templates cover the measured two-line rasterizations. |
 | `dola` | `Dola AI` | Bottom right | Text detector and detector-aligned wordmark footprint. |
-| `workbuddy` | `AI生成` over `WORKBUDDY>_` | Bottom right | Text detector and detector-aligned stacked-label footprint. |
+| `workbuddy` | `AI生成` and `WORKBUDDY>_` | Bottom right | Separate templates cover the single-line and stacked two-line layouts; corroborated by the registered Tencent WorkBuddy TC260 producer code. |
 | `samsung` | Italian or Korean Galaxy AI disclosure | Bottom left | Independently gated text layouts cover `Contenuti generati dall'AI` and `AI로 생성한 콘텐츠`. |
 | `runninghub` | `RunningHub AI生成` | Top left | Strict visual and position gates. |
 | `baidu` | `百度 AI生成` | Bottom right | Detector and extended removal footprint. |
@@ -111,9 +111,10 @@ The inspection and stripping code handles signals in these groups:
   high-confidence `aigc_signature` signal (MiniMax is the one pinned signer), a
   signature that does not verify is a caveat, and every result appears as the
   `aigc_signature` metadata marker. Nested JSON reserved fields are preserved;
-  Honor YOYO RSA/content signatures are reported as unsupported, with no
-  integrity or signer-trust claim. Its measured producer code attributes images
-  to Honor;
+  Honor YOYO RSA/content signatures and Tencent Yuanbao raw-hex SM2 signatures
+  without an embedded public key are reported as unsupported, with no integrity
+  or signer-trust claim. Registered producer codes attribute images and videos
+  to their respective vendors in [`_internal/tc260_producers.py`](../src/remove_ai_watermarks/_internal/tc260_producers.py);
 - xAI and Grok signature-plus-UUID pairs in ordinary EXIF, ImageMagick PNG raw
   EXIF profiles, XMP description/creator fields, PNG Description/Author text,
   and IPTC Caption-Abstract/By-line fields;
@@ -301,7 +302,10 @@ not a universal clean verdict.
 | Adobe Firefly | None registered | Optional TrustMark Variant P decoder | C2PA |
 | Midjourney | None registered | No registered pixel decoder | EXIF, XMP, and IPTC signals |
 | Luma AI | None registered | No registered pixel decoder | PNG text generator tags (Uni-1) |
-| ByteDance generators | Doubao and Jimeng marks | No registered pixel decoder | TC260 AIGC, supported C2PA, and exact app-export AIGC disclosures |
+| ByteDance generators | Doubao, Jimeng, Dola, and Seedance marks | No registered pixel decoder | TC260 AIGC (Doubao, Jimeng, Volcano Engine), supported C2PA (Dreamina, Dola, Pippit AI, BytePlus), and exact app-export AIGC disclosures |
+| Tencent Yuanbao and WorkBuddy | Yuanbao and WorkBuddy image marks | No registered pixel decoder | TC260 AIGC (with raw-hex SM2 `SecurityData` on Yuanbao) |
+| Meitu, vivo, Xiaomi, and Agnes AI | Generic `AI生成` label on vivo and Xiaomi Gallery AI edits | No registered pixel decoder | TC260 AIGC producer attribution |
+| Sync Labs, PixelBin.io, and TikTok AI | None registered | No registered pixel decoder | C2PA attribution |
 | Qwen | Qwen mark | No registered pixel decoder | TC260 AIGC |
 | Kling AI | Kling AI image and video marks | No registered pixel decoder | TC260 AIGC and the video SEI tag |
 | Vidu (ShengShu) | Vidu video mark | No registered pixel decoder | TC260 AIGC in the MP4 `AIGC` key |

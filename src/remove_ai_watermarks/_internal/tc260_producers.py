@@ -28,17 +28,42 @@ TC260_PRODUCERS = (
     # YOYO JPEG exports; USCC independently verified in Honor's privacy statement.
     Tc260Producer("honor", ("91440300MA5G49LC9K",), "Honor", image_platform="Honor"),
     Tc260Producer("doubao", ("91110102MACQD9K640", "doubao"), "ByteDance", "doubao", "doubao", "ByteDance Doubao"),
-    Tc260Producer("jimeng", ("9144030008867405X2",), "ByteDance", "jimeng"),
+    Tc260Producer("jimeng", ("9144030008867405X2",), "ByteDance", "jimeng", video_platform="ByteDance Dreamina"),
+    Tc260Producer(
+        "volcengine",
+        ("91110108MA01R70K8D",),
+        "ByteDance",
+        video_platform="ByteDance Volcano Engine",
+        image_platform="ByteDance Volcano Engine",
+    ),
     Tc260Producer("qwen", ("91440101MA9Y9T4H7A",), "Alibaba", "qwen", video_platform="Alibaba Cloud Qwen"),
     # Tongyi Yunqi (Hangzhou), owned by Alibaba Cloud and Tongyi Lab, signs
     # both Wan and HappyHorse exports, not just one model.
     Tc260Producer("wan", ("91330106MA2CFLDG4R",), "Alibaba", "wan", video_platform="Alibaba Tongyi (Wan, HappyHorse)"),
     # Kling 3.0 Turbo served by Higgsfield (2026-09-24) writes the bare "kling".
     Tc260Producer("kling", ("91110108335469089C", "kling"), "Kuaishou", "kling", "kling", "Kuaishou Kling AI"),
-    Tc260Producer("yuanbao", ("91440300708461136T",), "Tencent", "yuanbao"),
+    Tc260Producer(
+        "yuanbao",
+        ("91440300708461136T", "9144030071526726XG", "91440101327598294H"),
+        "Tencent",
+        "yuanbao",
+        video_platform="Tencent Yuanbao",
+        image_platform="Tencent Yuanbao",
+    ),
+    Tc260Producer(
+        "workbuddy",
+        ("911101085636549482",),
+        "Tencent",
+        "workbuddy",
+        image_platform="Tencent WorkBuddy",
+    ),
     Tc260Producer("runninghub", ("91340100MAEB4N8H76", "RunningHub"), "RunningHub", "runninghub"),
-    Tc260Producer("baidu", ("91110000802100433B",), "Baidu", "baidu"),
+    Tc260Producer("baidu", ("91110000802100433B",), "Baidu", "baidu", video_platform="Baidu"),
     Tc260Producer("liblib", ("91110105MACJ6K1C8A",), "LiblibAI", "liblib"),
+    Tc260Producer("meitu", ("913502007378955153",), "Meitu", image_platform="Meitu"),
+    Tc260Producer("vivo", ("91441900557262083U",), "vivo", image_platform="vivo"),
+    Tc260Producer("xiaomi", ("91110108596084056A",), "Xiaomi", image_platform="Xiaomi"),
+    Tc260Producer("agnes", ("91320191MAKHJ19D9J",), "Agnes AI", video_platform="Agnes AI", image_platform="Agnes AI"),
     # ShengShu's USCC, verified against the Beijing municipal list of 2025-03-03.
     Tc260Producer("vidu", ("91110108MACC4D63XF",), "ShengShu", video_mark="vidu", video_platform="ShengShu Vidu"),
     # Even-y SM2 point for the x coordinate carried by measured MiniMax exports

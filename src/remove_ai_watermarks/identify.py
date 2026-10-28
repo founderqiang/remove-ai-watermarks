@@ -31,6 +31,7 @@ from remove_ai_watermarks._internal.c2pa import (
     c2pa_info_from_manifest_store,
     c2pa_info_has_invismark,
     c2pa_info_has_removal_hint,
+    c2pa_vendor_platform,
     cbor_text_after,
     claim_generator_platform,
     extract_c2pa_info,
@@ -424,6 +425,7 @@ def evidence_from_metadata_record(
     for key in (
         "c2pa_manifest",
         "claim_generator",
+        "ai_tool",
         "c2pa_spec",
         "issuer",
         "source_type",
@@ -796,6 +798,9 @@ def _signer_platform(head: bytes, issuers: list[str]) -> str | None:
     return raw or normalized
 
 
+_NO_AI_GENERATOR_SUFFIX = "(no known AI generator named)"
+
+
 def _attribute_platform(issuers: list[str], *, is_ai: bool = True) -> str | None:
     """Map a set of C2PA issuer names to a human-readable generating platform.
 
@@ -815,7 +820,7 @@ def _attribute_platform(issuers: list[str], *, is_ai: bool = True) -> str | None
             if needle in joined:
                 return platform
     if issuers:  # e.g. Truepic alone -- a signing authority, not a generator
-        return f"C2PA signer: {', '.join(issuers)} (no known AI generator named)"
+        return f"C2PA signer: {', '.join(issuers)} {_NO_AI_GENERATOR_SUFFIX}"
     return None
 
 
@@ -855,6 +860,9 @@ _AI_VENDOR_TOKENS: tuple[tuple[str, str], ...] = (
     ("doubao", "ByteDance"),
     ("jimeng", "ByteDance"),
     ("dreamina", "ByteDance"),
+    ("dola", "ByteDance"),
+    ("seedance", "ByteDance"),
+    ("spring (sg)", "ByteDance"),
     ("volcengine", "ByteDance"),
     ("volcano engine", "ByteDance"),
     ("qwen", "Alibaba"),
@@ -862,11 +870,19 @@ _AI_VENDOR_TOKENS: tuple[tuple[str, str], ...] = (
     ("kling", "Kuaishou"),
     ("kuaishou", "Kuaishou"),
     ("yuanbao", "Tencent"),
+    ("workbuddy", "Tencent"),
     ("tencent", "Tencent"),
     ("runninghub", "RunningHub"),
     ("baidu", "Baidu"),
     ("ernie", "Baidu"),
     ("liblib", "LiblibAI"),
+    ("meitu", "Meitu"),
+    ("vivo", "vivo"),
+    ("xiaomi", "Xiaomi"),
+    ("agnes", "Agnes AI"),
+    ("sync labs", "Sync Labs"),
+    ("pippit", "ByteDance"),
+    ("pixelbin", "PixelBin.io"),
     ("canva", "Canva"),
     ("elevenlabs", "ElevenLabs"),
     ("eleven labs", "ElevenLabs"),
@@ -1178,13 +1194,13 @@ def _collect_visible_signals(
     elif sparkle_conf is not None and sparkle_conf >= _SPARKLE_THRESHOLD:
         signals.append(Signal("visible_sparkle", f"NCC confidence {sparkle_conf:.2f}", "medium"))
         watermarks.append(f"Google Gemini visible watermark (sparkle; confidence {sparkle_conf:.2f})")
-        if platform is None:
+        if platform is None or platform.endswith(_NO_AI_GENERATOR_SUFFIX):
             platform = "Google Gemini family (visible sparkle detected)"
 
     for detection in _visible_text_marks(image_path, image=image):
         signals.append(Signal(f"visible_{detection.key}", f"NCC confidence {detection.confidence:.2f}", "medium"))
         watermarks.append(f"Visible {detection.label} (confidence {detection.confidence:.2f})")
-        if platform is None:
+        if platform is None or platform.endswith(_NO_AI_GENERATOR_SUFFIX):
             platform = _VISIBLE_MARK_PLATFORM[detection.key]
     return platform
 
@@ -1275,6 +1291,11 @@ def _identify_from_evidence(
         or (info.get("ai_tool") if reader_decoded else ", ".join(_ai_tools_in(region)))
         or None
     )
+    ai_tool = str(info.get("ai_tool") or "")
+    generator_platform = claim_generator_platform(generator)
+    ai_tool_platform = claim_generator_platform(ai_tool) if ai_tool else None
+    generator_vendor_platform = c2pa_vendor_platform(generator) if generator else None
+    issuer_platform = _attribute_platform(issuers, is_ai=c2pa_is_ai)
     # Platform: a distinctive device/camera token in the manifest wins (it is the
     # signer/producer), then an exact product generator, then an editing-app or
     # AI-device signer (Samsung Galaxy, ASUS Gallery), with the issuer byte-scan
@@ -1286,19 +1307,20 @@ def _identify_from_evidence(
             camera_label
             # Exact product generators are useful provenance even when the
             # signed operation is a non-AI edit (for example, CapCut).
-            or claim_generator_platform(generator)
+            or generator_platform
             # An AI product generator recorded under a generic re-signer beats the
             # signer's own label: Dreamina exports carry a "Dreamina/7.5.0"
             # ingredient under an active "ByteDance Media Transcode Service"
             # claim (measured 2026-09-24).
-            or (claim_generator_platform(str(info.get("ai_tool"))) if c2pa_is_ai and info.get("ai_tool") else None)
+            or (ai_tool_platform if c2pa_is_ai else None)
             or signer_label
             or (
                 _GOOGLE_PHOTOS_EDIT
                 if c2pa_is_ai and source_kind == "enhanced" and "Google Photos" in issuer_blob
                 else None
             )
-            or _attribute_platform(issuers, is_ai=c2pa_is_ai)
+            or (generator_vendor_platform if c2pa_is_ai else None)
+            or issuer_platform
         )
         if has_c2pa and c2pa_usable
         else None
@@ -1324,14 +1346,18 @@ def _identify_from_evidence(
             else:
                 caveats.append(_C2PA_UNVALIDATED_CAVEAT)
         # Record the AI-origin vendor for clash detection only when the source is
-        # actually AI -- classify the issuer attribution / generator, NOT the
+        # actually AI -- classify the active claim generator / AI tool before the
+        # merged issuer list (where an upstream ingredient issuer such as OpenAI
+        # can precede the active Google Gemini signer in registry order), NOT the
         # resolved `platform` (which may be a camera device token whose label,
         # e.g. "Google Pixel", would mis-normalize to an AI vendor).
         if c2pa_is_ai and (
             v := (
-                _vendor_of(_attribute_platform(issuers, is_ai=True))
+                _vendor_of(generator_platform or generator_vendor_platform)
+                or _vendor_of(ai_tool_platform)
+                or _vendor_of(issuer_platform)
                 or _vendor_of(generator)
-                or _vendor_of(str(info.get("ai_tool", "")))
+                or _vendor_of(ai_tool)
             )
         ):
             ai_vendor_claims["c2pa"] = v

@@ -329,6 +329,7 @@ _C2PA_STRUCTURAL_MARKERS = frozenset(
     {
         "c2pa_manifest",
         "claim_generator",
+        "ai_tool",
         "c2pa_spec",
         "issuer",
         "actions",
@@ -359,31 +360,43 @@ def _video_markers_claim_ai(markers: dict[str, str]) -> bool:
     if "trainedalgorithmicmedia" in source_type.casefold() or source_type.startswith("c2pa.ai-disclosure"):
         return True
     issuer = markers.get("issuer", "")
-    generator = markers.get("claim_generator", "")
-    return (
-        any(org in issuer for org in C2PA_IDENTITY_AI_ORGS)
-        or claim_generator_platform(generator) is not None
-        or bool(registry_word_matches(generator, C2PA_AI_TOOLS))
+    return any(org in issuer for org in C2PA_IDENTITY_AI_ORGS) or any(
+        claim_generator_platform(value) is not None or bool(registry_word_matches(value, C2PA_AI_TOOLS))
+        for value in (markers.get("claim_generator", ""), markers.get("ai_tool", ""))
     )
 
 
 def _platform_from_video_metadata(markers: dict[str, str]) -> str | None:
     """Map supported C2PA-derived marker text to its generating platform."""
     from remove_ai_watermarks._internal.c2pa import c2pa_vendor_platform, claim_generator_platform
+    from remove_ai_watermarks._internal.constants import C2PA_SIGNER_PLATFORM_BY_ORG
+    from remove_ai_watermarks.metadata import LOCAL_GENERATION_METADATA_KEYS
 
     generator = markers.get("claim_generator", "")
+    ai_tool = markers.get("ai_tool", "")
     if platform := (
         claim_generator_platform(generator)
         or c2pa_vendor_platform(generator)
+        or claim_generator_platform(ai_tool)
+        or c2pa_vendor_platform(ai_tool)
+        or c2pa_vendor_platform(markers.get("app_provenance", ""))
         or c2pa_vendor_platform("\n".join(markers.values()))
     ):
         return platform
+    issuer = markers.get("issuer", "")
+    if signer_platform := next(
+        (C2PA_SIGNER_PLATFORM_BY_ORG[org] for org in C2PA_SIGNER_PLATFORM_BY_ORG if org in issuer),
+        None,
+    ):
+        return signer_platform
     if "aigc_label" in markers:
         return _tc260_video_platform(markers.get("aigc_producer", "")) or (
             "China AIGC-labeled content (TC260 standard)"
         )
     if "kling_sei" in markers:
         return _tc260_video_platform("kling")
+    if any(key.lower() in LOCAL_GENERATION_METADATA_KEYS for key in markers):
+        return "Stable Diffusion / local pipeline (Automatic1111, ComfyUI, InvokeAI)"
     return None
 
 

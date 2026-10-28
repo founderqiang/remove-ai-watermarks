@@ -220,3 +220,29 @@ def test_registry_drives_current_visible_families():
 def test_registry_keys_cover_legacy_visible_wording():
     assert regression.family_of("Qwen 千问 AI label") == "visible_qwen"
     assert regression.family_of("Microsoft AI badge") == "visible_microsoft"
+
+
+def test_legacy_watermark_strings_align_with_current_signal_names():
+    sidecar = {
+        "watermarks": [
+            "China AIGC label (TC260 standard)",
+            "IPTC AISystemUsed: Watermark Remover",
+            "Open invisible watermark (DWT-DCT / RivaGAN; Stable Diffusion XL / Kandinsky 2.1)",
+            "Generation parameters (prompt / seed / steps / sampler / CFG)",
+            "Embedded generator tag: ByteDance Aweme AI",
+            "Forensic watermark soft binding (Microsoft InvisMark; com.microsoft.invismark.1)",
+        ]
+    }
+    report = SimpleNamespace(
+        signals=[
+            SimpleNamespace(name="aigc"),
+            SimpleNamespace(name="iptc_ai_system"),
+            SimpleNamespace(name="invisible_watermark"),
+            SimpleNamespace(name="gen_params"),
+            SimpleNamespace(name="exif_generator"),
+            SimpleNamespace(name="soft_binding"),
+            SimpleNamespace(name="invismark"),
+        ],
+        watermarks=sidecar["watermarks"],
+    )
+    assert regression.sidecar_families(sidecar) == regression.report_families(report)

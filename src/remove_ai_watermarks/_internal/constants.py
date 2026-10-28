@@ -126,6 +126,8 @@ C2PA_AI_VENDORS: tuple[C2paAiVendor, ...] = (
     _vendor(b"Ideogram", "Ideogram", "Ideogram", "Ideogram", asserts_ai=True),
     _vendor(b"xAI Grok Imagine", "xAI Grok Imagine", "xAI Grok Imagine", "xAI", asserts_ai=True),
     _vendor(b"Producer.ai", "Producer.ai", "Producer.ai", "Producer.ai", asserts_ai=True),
+    _vendor(b"Synchronicity Labs", "Sync Labs", "Sync Labs", "Sync Labs", asserts_ai=True),
+    _vendor(b"pixelbin.io", "PixelBin.io", "PixelBin.io", "PixelBin.io"),
     # This signature names only SPRING's legal entity, not a product. Preserve
     # that signer identity without guessing which product produced a file.
     _vendor(b"SPRING (SG) PTE. LTD.", "SPRING (SG) PTE. LTD.", "SPRING (SG) PTE. LTD.", "SPRING"),
@@ -220,6 +222,10 @@ C2PA_CLAIM_GENERATOR_PLATFORMS: tuple[tuple[str, str], ...] = (
     ("adobe_firefly", "Adobe Firefly"),
     ("firefly", "Adobe Firefly"),
     ("dreamina", "ByteDance Dreamina"),
+    ("pippit", "ByteDance Pippit AI"),
+    ("dola", "ByteDance Dola"),
+    ("sync labs", "Sync Labs"),
+    ("pixelbin.io", "PixelBin.io"),
     ("higgsfield ai", "Higgsfield AI"),
     ("recraft.ai", "Recraft"),
     ("topaz labs image api", "Topaz Labs"),
@@ -239,6 +245,9 @@ C2PA_AI_TOOLS = {
         ("Imagen", "Imagen"),
         ("Firefly", "Firefly"),
         ("Dreamina", "Dreamina"),
+        ("Pippit", "Pippit"),
+        ("Dola", "Dola"),
+        ("TIKTOK AD Creative Toolbox", "TikTok Ad Creative Toolbox"),
     )
 }
 

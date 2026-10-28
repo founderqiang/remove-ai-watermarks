@@ -132,8 +132,10 @@ def check_tc260_signature(label: Mapping[str, str]) -> Tc260Signature | None:
         parsed: object = json.loads(label.get("ReservedCode1", ""))
     except ValueError:
         return None
-    security = _object(_object(parsed).get("SecurityData"))
-    if security.get("Type") != "TC260PG":
+    top = _object(parsed)
+    security = _object(top.get("SecurityData")) or top
+    security_type = security.get("Type")
+    if not isinstance(security_type, str) or security_type.strip() != "TC260PG":
         return None
     public = _objects(security.get("PubSD", security.get("PubSd")))
     keys = {

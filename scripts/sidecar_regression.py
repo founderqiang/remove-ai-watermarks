@@ -65,29 +65,32 @@ _LEGACY_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("visible_doubao", ("豆包", "doubao")),
     ("visible_jimeng", ("即梦", "jimeng")),
     ("visible_samsung", ("galaxy ai", "generati dall")),
-    ("aigc_tc260", ("aigc", "tc260")),
+    ("aigc", ("aigc", "tc260")),
+    ("iptc_ai_system", ("aisystemused", "ai system used")),
     ("iptc", ("iptc", "digitalsourcetype", "made with ai", "made-with-ai")),
     ("c2pa", ("c2pa", "content credentials")),
     ("trustmark", ("trustmark",)),
-    ("open_invisible", ("open invisible", "dwt", "stable diffusion xl")),
+    ("invisible_watermark", ("open invisible", "dwt", "stable diffusion xl")),
     ("xai_signature", ("xai", "grok signature")),
     ("samsung_genai", ("genaitype", "photoeditor_re_edit")),
-    ("soft_binding", ("soft binding", "soft-binding", "invismark")),
+    ("soft_binding", ("soft binding", "soft-binding")),
+    ("invismark", ("invismark",)),
     ("c2pa_cloud", ("cloud manifest",)),
     ("hf_job", ("hf-job", "higgsfield job", "hugging face job")),
-    ("exif_generator", ("exif", "software tag", "png text")),
+    ("gen_params", ("generation parameters",)),
+    ("exif_generator", ("exif", "software tag", "png text", "embedded generator tag")),
 )
 
 
-def _registered_visible_family(description: str) -> str | None:
+def _registered_visible_family(low: str, *, exact_label_only: bool = False) -> str | None:
     """Map current mark labels from the registry instead of copying its keys here."""
     from remove_ai_watermarks.watermark_registry import known_marks
 
-    low = description.lower()
     matches = [
         (mark.label.lower() in low, len(mark.label), mark)
         for mark in known_marks()
-        if mark.key != "gemini" and (mark.label.lower() in low or mark.key.replace("_", " ") in low)
+        if mark.key != "gemini"
+        and (mark.label.lower() in low or (not exact_label_only and mark.key.replace("_", " ") in low))
     ]
     if not matches:
         return None
@@ -97,16 +100,25 @@ def _registered_visible_family(description: str) -> str | None:
 
 def family_of(description: str) -> str:
     low = description.lower()
-    if family := _registered_visible_family(description):
+    if family := _registered_visible_family(low, exact_label_only=True):
         return family
     for name, tokens in _LEGACY_FAMILIES:
         if any(t in low for t in tokens):
             return name
+    if family := _registered_visible_family(low):
+        return family
     return "other"
 
 
 def families(descriptions: list[str]) -> set[str]:
-    return {family for description in descriptions or [] if (family := family_of(description)) != "other"}
+    result: set[str] = set()
+    for description in descriptions or []:
+        if (family := family_of(description)) != "other":
+            result.add(family)
+        low = description.lower()
+        if "soft binding" in low and "invismark" in low:
+            result.add("invismark")
+    return result
 
 
 def sidecar_families(sidecar: dict) -> set[str]:

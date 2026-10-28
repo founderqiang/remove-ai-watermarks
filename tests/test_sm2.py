@@ -176,6 +176,14 @@ class TestTc260Signature:
     def test_reserved_codes_without_security_data_are_not_signatures(self, reserved: str) -> None:
         assert check_tc260_signature({"Label": "1", "ReservedCode1": reserved}) is None
 
+    def test_direct_tc260pg_object_with_padded_type_verifies(self) -> None:
+        label = _minimax_label()
+        security = json.loads(label["ReservedCode1"])["SecurityData"]
+        security["Type"] = " TC260PG"
+        direct_label = {**label, "ReservedCode1": json.dumps(security, separators=(",", ":"))}
+        result = check_tc260_signature(direct_label)
+        assert result == tc260_signature.Tc260Signature(label="verified", signer="MiniMax")
+
 
 def _labeled_png(path: Path, label: dict[str, str], text: dict[str, str] | None = None) -> Path:
     from PIL import Image
