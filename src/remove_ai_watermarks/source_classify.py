@@ -77,7 +77,7 @@ WEIGHTS_ENV = "RAIW_SOURCE_CLASSIFY_WEIGHTS"
 WEIGHTS_REPO = "wiltodelta/raiw-source-classify"
 WEIGHTS_REVISION = "24a03264ae157ec0d18f8b7215b33df7a403ca01"
 MODEL_FILE = "multi-provider-source-v3.npz"
-MODEL_SHA256 = "e5264354edb0109461e3c4988e3267903a8a2a0648b05e81705dee298be97806"
+MODEL_SHA256 = "f7f5da50edccc264f3a326208abc4fc6f36b7e085f0fc0507dff4b4f260d21b3"
 MODEL_SCHEMA = "multi-provider-source-v3"
 SOURCE_CLASSIFY_EXTRA = "'remove-ai-watermarks[source-classify]'"
 

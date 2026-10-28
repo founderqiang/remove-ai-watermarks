@@ -2,7 +2,7 @@
   "claim": "abstaining 10-provider source-pipeline classification with version subfamily attribution; not SynthID detection",
   "schema": "multi-provider-source-v3",
   "artifact_file": "multi-provider-source-v3.npz",
-  "artifact_sha256": "e5264354edb0109461e3c4988e3267903a8a2a0648b05e81705dee298be97806",
+  "artifact_sha256": "f7f5da50edccc264f3a326208abc4fc6f36b7e085f0fc0507dff4b4f260d21b3",
   "feature_dimension": 956,
   "stacked_stage2_dimension": 999,
   "classes": [
@@ -19,51 +19,51 @@
     "unknown"
   ],
   "corpus_counts": {
-    "total": 40974,
-    "train": 25790,
-    "calibration": 6708,
-    "test": 8476
+    "total": 40057,
+    "train": 25180,
+    "calibration": 6595,
+    "test": 8282
   },
   "locked_internal_test": {
-    "n": 8476,
-    "unknown_specificity": 0.9968253968253968,
-    "unknown_fpr": 0.0031746031746031746,
-    "photo_fpr": 0.0036646816307833257,
-    "structured_fpr": 0.0027014858171994597,
-    "aggregate_target_recall": 0.5329562223315298,
+    "n": 8282,
+    "unknown_specificity": 0.9977678571428571,
+    "unknown_fpr": 0.002232142857142857,
+    "photo_fpr": 0.004580852038479157,
+    "structured_fpr": 0.0,
+    "aggregate_target_recall": 0.567859021567596,
     "recall": {
-      "openai": 0.650087260034904,
-      "google": 0.5606936416184971,
-      "bytedance": 0.48247978436657685,
-      "flux": 0.41216216216216217,
-      "stable_diffusion": 0.4811083123425693,
-      "meta": 0.776595744680851,
-      "midjourney": 0.5454545454545454,
-      "ideogram": 0.3472222222222222,
-      "firefly": 0.21686746987951808,
-      "xai": 0.14583333333333334
+      "openai": 0.6518324607329843,
+      "google": 0.6233140655105973,
+      "bytedance": 0.5013477088948787,
+      "flux": 0.4337837837837838,
+      "stable_diffusion": 0.5714285714285714,
+      "meta": 0.7872340425531915,
+      "midjourney": 0.6753246753246753,
+      "ideogram": 0.4027777777777778,
+      "firefly": 0.2289156626506024,
+      "xai": 0.16666666666666666
     },
     "precision": {
-      "openai": 0.9662775616083009,
-      "google": 0.9748743718592965,
-      "bytedance": 0.988950276243094,
-      "flux": 0.9775641025641025,
-      "stable_diffusion": 0.9597989949748744,
-      "meta": 0.948051948051948,
-      "midjourney": 0.84,
-      "ideogram": 0.78125,
-      "firefly": 0.8571428571428571,
-      "xai": 0.7777777777777778
+      "openai": 0.9713914174252276,
+      "google": 0.9743975903614458,
+      "bytedance": 0.9893617021276596,
+      "flux": 0.963963963963964,
+      "stable_diffusion": 0.8837209302325582,
+      "meta": 0.925,
+      "midjourney": 0.7027027027027027,
+      "ideogram": 0.725,
+      "firefly": 1.0,
+      "xai": 0.7272727272727273
     },
     "real_variety_specificity": {
-      "photo": 0.9963353183692167,
-      "photo_retouched": 0.9968847352024922,
+      "photo": 0.9954191479615209,
+      "photo_retouched": 1.0,
       "classical_inpaint": 1.0,
-      "digital_art": 0.9977324263038548,
-      "game_art": 0.9923664122137404,
+      "digital_art": 1.0,
+      "game_art": 1.0,
       "vector": 1.0,
-      "interface": 0.9941520467836257,
-      "diagram": 0.9897959183673469,
+      "interface": 1.0,
+      "diagram": 1.0,
       "chart_data_viz": 1.0,
       "technical_architecture": 1.0,
       "procedural_graphic": 1.0,
@@ -71,21 +71,21 @@
       "gov_scientific_doc": 1.0,
       "receipt_invoice": 1.0,
       "print_publishing": 1.0,
-      "stress_recompressed": 0.9902912621359223,
+      "stress_recompressed": 1.0,
       "foreign_ai": 1.0
     }
   },
   "external_blind_selective_v8_real_varieties": {
     "total_evaluated": 2267,
-    "total_false_positives": 8,
-    "overall_fpr": 0.0035288928098808998,
-    "overall_specificity": 0.9964711071901191,
+    "total_false_positives": 3,
+    "overall_fpr": 0.0013233348037053375,
+    "overall_specificity": 0.9986766651962946,
     "per_variety": {
       "photo": {
         "evaluated": 450,
-        "false_positives": 3,
-        "fpr": 0.006666666666666667,
-        "specificity": 0.9933333333333333
+        "false_positives": 2,
+        "fpr": 0.0044444444444444444,
+        "specificity": 0.9955555555555555
       },
       "vector": {
         "evaluated": 332,
@@ -95,9 +95,9 @@
       },
       "game_art": {
         "evaluated": 230,
-        "false_positives": 4,
-        "fpr": 0.017391304347826087,
-        "specificity": 0.9826086956521739
+        "false_positives": 1,
+        "fpr": 0.004347826086956522,
+        "specificity": 0.9956521739130435
       },
       "interface": {
         "evaluated": 342,
@@ -119,21 +119,21 @@
       },
       "stress_recompressed": {
         "evaluated": 300,
-        "false_positives": 1,
-        "fpr": 0.0033333333333333335,
-        "specificity": 0.9966666666666667
+        "false_positives": 0,
+        "fpr": 0.0,
+        "specificity": 1.0
       }
     }
   },
   "stage2_version_accuracy": {
-    "openai": 0.868237347294939,
-    "google": 0.9479768786127167,
-    "bytedance": 0.8787061994609164,
-    "flux": 0.9283783783783784,
-    "stable_diffusion": 0.853904282115869,
+    "openai": 0.8760907504363001,
+    "google": 0.9499036608863198,
+    "bytedance": 0.9002695417789758,
+    "flux": 0.9283783783783783,
+    "stable_diffusion": 0.9172932330827067,
     "midjourney": 0.961038961038961,
-    "ideogram": 0.5972222222222222,
+    "ideogram": 0.6111111111111112,
     "firefly": 1.0,
-    "xai": 0.6458333333333334
+    "xai": 0.6875
   }
 }

@@ -1,7 +1,7 @@
 """Generated C2PA soft-binding registry; do not edit by hand.
 
 Source: https://raw.githubusercontent.com/c2pa-org/softbinding-algorithm-list/main/softbinding-algorithm-list.json
-Revision: d5960248ab69c17dc194906d2ef7d11ad164be70
+Revision: 258694702b5628d35373182f5b334aa07b6df1ec
 Source license: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
 Changes: validated, ordered, and reduced to fields used at runtime; descriptions
 are shortened to their first sentence for display.
@@ -12,7 +12,7 @@ from __future__ import annotations
 C2PA_SOFT_BINDING_SOURCE_URL = (
     "https://raw.githubusercontent.com/c2pa-org/softbinding-algorithm-list/main/softbinding-algorithm-list.json"
 )
-C2PA_SOFT_BINDING_SOURCE_REVISION = "d5960248ab69c17dc194906d2ef7d11ad164be70"
+C2PA_SOFT_BINDING_SOURCE_REVISION = "258694702b5628d35373182f5b334aa07b6df1ec"
 C2PA_SOFT_BINDING_SOURCE_LICENSE = "CC BY 4.0"
 
 C2PA_SOFT_BINDING_ROWS: tuple[
@@ -641,6 +641,42 @@ C2PA_SOFT_BINDING_ROWS: tuple[
         "ImmoStory AI deployment of Meta FAIR's Video Seal 1.0 invisible video watermark",
         "2026-10-12T00:00:00.000Z",
         (),
+        False,
+    ),
+    (
+        55,
+        "com.adobe.trustmark.F",
+        "watermark",
+        ("image",),
+        (),
+        "Adobe FiLMCAM Conditional Access Watermarking / Trustmark variant F",
+        "2026-10-14T14:00:00.000Z",
+        (),
+        False,
+    ),
+    (
+        56,
+        "com.quatvision.quatmark.1",
+        "watermark",
+        ("image",),
+        ("image/jpeg", "image/png", "image/tiff", "image/webp"),
+        "QuatMark keyed invisible image watermark",
+        "2026-10-16T00:00:00.000Z",
+        (),
+        False,
+    ),
+    (
+        60,
+        "studio.aidr.silentcipher.1",
+        "watermark",
+        ("audio",),
+        ("audio/wav",),
+        (
+            "AIDR Studio deployment of Sony Research's open SilentCipher 44.1 kHz audio watermark "
+            "(silentcipher 1.0.5, MIT), used without retraining"
+        ),
+        "2026-10-28T00:00:00.000Z",
+        ("https://aidr.studio/api/c2pa/v1",),
         False,
     ),
 )

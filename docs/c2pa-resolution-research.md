@@ -12,14 +12,15 @@ API: a standard way of retrieving manifest stores from a resolution endpoint
 given **a soft binding value, a manifest identifier, or an asset** - three
 input modes that are exactly three privacy exposure levels. The algorithm
 registry (`c2pa-org/softbinding-algorithm-list`) carries the endpoint URIs in
-`softBindingResolutionApis`. As of the packaged revision `1b3ef637890e`,
-8 of 53 entries publish them.
+`softBindingResolutionApis`. As of the packaged revision `258694702b56`,
+9 of 57 entries publish them.
 
 ## Measured contracts
 
 | Algorithm | Kind | Endpoint | Input | Content leaves | Content digest leaves |
 | --- | --- | --- | --- | --- | --- |
 | `com.aiwatermark.audioseal.1` / `videoseal` / `pixelseal` | watermark | `aiwatermark.com/api/v1/resolve` | `GET ?payload={extracted payload}&alg=` | no | no |
+| `studio.aidr.silentcipher.1` | watermark | `aidr.studio/api/c2pa/v1` | 40-bit SilentCipher payload (`0xAD` + 32-bit clip ID) | no | no |
 | `com.joinmonolith.sha256` | fingerprint | `api.joinmonolith.com/api/c2pa/matches/byBinding` | `GET ?alg&value=base64(SHA-256 of asset)` | no | yes |
 | `me.deepmark.audio.vigil.128` | watermark | `resolution-api.deepmark.me` | payload-based per vendor site | no | no |
 | `ai.trufo.pawprint.watermark` / `.fingerprint` | both | `c2pa.trufo.ai/v1` | not published publicly | ? | ? |

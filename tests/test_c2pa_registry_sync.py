@@ -84,7 +84,7 @@ def test_official_source_is_fetched_through_its_resolved_revision(monkeypatch: p
 def test_packaged_snapshot_preserves_published_resolution_apis():
     """Guard the resolution-API subset the runtime deliberately never calls.
 
-    Eight algorithms publish ``softBindingResolutionApis`` today. The runtime
+    Nine algorithms publish ``softBindingResolutionApis`` today. The runtime
     resolves nothing over the network by design (see
     docs/c2pa-resolution-research.md for the contracts and the product
     decision); this guard keeps the packaged snapshot honest about what the
@@ -100,6 +100,7 @@ def test_packaged_snapshot_preserves_published_resolution_apis():
         "me.deepmark.audio.vigil.128": ("https://resolution-api.deepmark.me",),
         "io.blockfact.audio.watermark.32": ("https://api.blockfact.io/api/soft-binding/v1",),
         "com.joinmonolith.sha256": ("https://api.joinmonolith.com/api/c2pa",),
+        "studio.aidr.silentcipher.1": ("https://aidr.studio/api/c2pa/v1",),
     }
     packaged = {entry.algorithm: entry.resolution_apis for entry in C2PA_SOFT_BINDING_REGISTRY}
 
