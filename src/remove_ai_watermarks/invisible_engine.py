@@ -157,14 +157,16 @@ class InvisibleEngine:
             device: Device for inference. All profiles are CUDA-only, so the
                 usable values are "cuda" and None/"auto" (which detects it);
                 anything else raises rather than falling back.
-            pipeline: Pipeline profile, one of "qwen-zimage" (DEFAULT;
-                Qwen-Image-2512 Lightning + Canny, then SAM-masked Z-Image face repair)
-                or "sdxl-zimage" (the same recipe and the same face stage on an SDXL
-                global pass, vendor-adaptive strength because an SDXL global stage
-                needs more of it) or "chroma-zimage" (the same face stage on an
-                Apache-2.0 Chroma1 global pass with its own flat vendor floors;
-                see docs/chroma1-engine-research.md). ALL ARE CUDA-ONLY -- there is
-                no CPU or MPS path for invisible-watermark removal.
+            pipeline: Pipeline profile, one of "qwen-zimage" (DEFAULT, Apache-2.0;
+                Qwen-Image-2512 Lightning + Canny, then SAM-masked Z-Image face repair),
+                "qwen21-zimage" (NON-COMMERCIAL / PERSONAL & RESEARCH USE ONLY under
+                the Qwen Research License; Qwen-Image-2.1 + texture-fix VAE + Canny,
+                then the same Z-Image face stage), "sdxl-zimage" (the same recipe and
+                the same face stage on an SDXL global pass, vendor-adaptive strength
+                because an SDXL global stage needs more of it) or "chroma-zimage" (the
+                same face stage on an Apache-2.0 Chroma1 global pass with its own flat
+                vendor floors; see docs/chroma1-engine-research.md). ALL ARE CUDA-ONLY
+                -- there is no CPU or MPS path for invisible-watermark removal.
             hf_token: Hugging Face API token.
             progress_callback: Optional callback for progress messages.
             controlnet_conditioning_scale: Canny ControlNet structure-preservation
@@ -172,8 +174,8 @@ class InvisibleEngine:
             cpu_offload: Offload model components to CPU between CUDA calls instead
                 of keeping the whole pipeline in VRAM, at the cost of speed. Forces
                 the face stack to offload instead of using automatic residency, on
-                every profile; reaches the global stack of qwen-zimage and
-                sdxl-zimage, not chroma-zimage.
+                every profile; reaches the global stack of qwen-zimage,
+                qwen21-zimage, and sdxl-zimage, not chroma-zimage.
                 CUDA only.
         """
 

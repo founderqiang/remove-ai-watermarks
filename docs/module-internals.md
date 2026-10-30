@@ -111,8 +111,8 @@ names and defaults.
 `--adaptive-polish` is tri-state: it declares `default=None`, so "the user did not
 choose" is a value the CLI passes through rather than a default it has to invent.
 `resolve_adaptive_polish` in `watermark_profiles.py` turns that `None` into the
-profile's answer (off for `qwen-zimage`, whose output already matches the input's
-detail level; on for `sdxl-zimage`). The same call runs inside
+profile's answer (off for `qwen-zimage` and `qwen21-zimage`, whose outputs already
+match the input's detail level; on for `sdxl-zimage`). The same call runs inside
 `InvisibleEngine.remove_watermark`, so a library caller and a CLI caller on one
 profile get the same output.
 
@@ -2197,17 +2197,20 @@ is the source of truth for:
 - the SDXL global-stage checkpoint id (`SDXL_MODEL_ID`) and the Canny ControlNet id;
 - strength resolution for every profile.
 
-The current profiles are `qwen-zimage` (the default), `sdxl-zimage`,
-`chroma-zimage`, and `auto`, and all four are CUDA-only. `controlnet`, `sdxl`,
-`qwen` and `default` were removed rather than kept as a CPU path, and are
-rejected rather than aliased onward. `auto` is a deterministic per-cohort
-selection policy:
+The current profiles are `qwen-zimage` (the default), `qwen21-zimage` (opt-in;
+`Qwen/Qwen-Image-2.1` is under the non-commercial Qwen Research License, for
+research and personal use only), `sdxl-zimage`, `chroma-zimage`, and `auto`, and
+all five are CUDA-only. `controlnet`, `sdxl`, `qwen` and `default` were removed
+rather than kept as a CPU path, and are rejected rather than aliased onward. `auto`
+is a deterministic per-cohort selection policy:
 sdxl-zimage for Google, chroma-zimage for Microsoft, and qwen-zimage for
-OpenAI, Meta, and unknown.
+OpenAI, Meta, and unknown (keeping `auto` commercial-safe).
 It does not run a learned router or classify the image's genre.
 
-`qwen-zimage` normally resolves global denoise from image area for unknown content.
-Measured provider cohorts bypass that curve with flat operating points. The values,
+`qwen-zimage` and `qwen21-zimage` resolve global denoise from image area for unknown
+content. Measured provider cohorts bypass that curve with flat operating points
+(`qwen21-zimage` uses `QWEN21_ZIMAGE_OPENAI_STRENGTH = 0.20` for OpenAI and shares
+the Google `0.35`, Microsoft `0.15`, and Meta `0.10` points). The values,
 measurement derivations, and corpus limits are canonical in
 [`known-limitations.md`](known-limitations.md#strength-is-content-and-seed-dependent).
 
@@ -2278,9 +2281,9 @@ Regression coverage:
 Nothing calls Diffusers' `enable_model_cpu_offload` any more -- that belonged to
 the deleted single-stage profiles. `--cpu-offload` sets both residency fields, and
 they do not travel the same distance: the face field is read by the shared base and
-so applies to every profile, while the global field is read by `QwenZImagePipeline`
-and `SdxlZImagePipeline`. `ChromaZImagePipeline` loads its global stack with a
-plain `.to(device)` and never consults it.
+so applies to every profile, while the global field is read by `QwenZImagePipeline`,
+`Qwen21ZImagePipeline`, and `SdxlZImagePipeline`. `ChromaZImagePipeline` loads its
+global stack with a plain `.to(device)` and never consults it.
 
 `GLOBAL_OFFLOAD_PROFILES` in `watermark_profiles.py` is the list, and
 `global_offload_supported` the question; `WatermarkRemover._warn_if_global_offload_unsupported`
@@ -2368,15 +2371,26 @@ on every subclass. Adding a third global stage means implementing those hooks,
 not inheriting from another profile's pipeline.
 
 [`_internal/qwen_zimage_pipeline.py`](../src/remove_ai_watermarks/_internal/qwen_zimage_pipeline.py)
-implements the fixed CUDA-only two-stage profile on that base:
+implements both fixed CUDA-only Qwen two-stage profiles (`QwenZImagePipeline` for
+`qwen-zimage` and `Qwen21ZImagePipeline` for `qwen21-zimage`) directly on
+`TwoStageZImagePipeline`:
 
-1. Qwen Image with Canny conditioning regenerates the frame.
+1. Qwen Image (`Qwen/Qwen-Image-2512` + fused 4-step Lightning LoRA + `InstantX/Qwen-Image-ControlNet-Union` in `qwen-zimage`; unfused `Qwen/Qwen-Image-2.1` + `madebyollin/texture-fix-vae-for-qwen-image-2.1` + `alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union` in `qwen21-zimage`) with Canny conditioning regenerates the frame in 4 steps under `FlowMatchScheduler("Qwen-Image-Lightning")`.
 2. YuNet locates faces, SAM builds masks, and Z-Image regenerates the selected
    face regions.
 
 The profile rejects a custom model identifier. Its global and face model stack
 is fixed by the implementation. When tiling is enabled, only the global stage
-is tiled; the face stage runs once after the tiles are blended.
+is tiled; the face stage runs once after the tiles are blended. Unlike 20B
+`qwen-zimage` (`_build_qwen_vram_config`, which stores disk/CPU weights in
+`torch.float8_e4m3fn`), 7B `qwen21-zimage` uses `_build_qwen21_vram_config` to
+keep its stack in `torch.bfloat16` (`cuda` when resident, `cpu` -> `cuda` when
+`--cpu-offload` is enabled) and registers `QwenImage21ZeroCenterRMSNorm` in
+DiffSynth's `VRAM_MANAGEMENT_MODULE_MAPS` for `QwenImage21ControlNet`:
+`madebyollin/texture-fix-vae-for-qwen-image-2.1` rescales its decoder weights by
+`1 / 512` (`2^-9`), which underflows unscaled `float8_e4m3fn` (`DiskMap` load-time
+cast) to zero and decodes a flat gray frame (`test_qwen21_vram_config_preserves_bfloat16_to_prevent_texture_fix_vae_underflow`
+guards this).
 
 #### How the face stage actually composites
 

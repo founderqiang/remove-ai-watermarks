@@ -244,12 +244,14 @@ def _tile_options(f: Any) -> Any:
 # delivers. BOTH remaining profiles are CUDA-only.
 _PIPELINE_CHOICES = list(PROFILE_CHOICES)
 _PIPELINE_HELP = (
-    "Pipeline profile. qwen-zimage (DEFAULT) = Qwen-Image-2512 + Lightning + Canny, "
-    "followed by SAM-masked Z-Image face repair; sdxl-zimage = the same recipe and the "
-    "same face stage on an SDXL global pass, which needs more denoise; chroma-zimage = "
-    "the same face stage on an Apache-2.0 Chroma1 global pass; auto = pick the engine "
-    "from the provenance (sdxl-zimage for Google, chroma-zimage for Microsoft, "
-    "qwen-zimage for OpenAI/Meta/unknown). "
+    "Pipeline profile. qwen-zimage (DEFAULT, Apache-2.0) = Qwen-Image-2512 + Lightning + "
+    "Canny, followed by SAM-masked Z-Image face repair; qwen21-zimage (NON-COMMERCIAL / "
+    "PERSONAL & RESEARCH USE ONLY under the Qwen Research License) = Qwen-Image-2.1 + "
+    "texture-fix VAE + Canny + the same Z-Image face stage; sdxl-zimage = the same recipe "
+    "and the same face stage on an SDXL global pass, which needs more denoise; "
+    "chroma-zimage = the same face stage on an Apache-2.0 Chroma1 global pass; auto = "
+    "pick the commercial-safe engine from the provenance (sdxl-zimage for Google, "
+    "chroma-zimage for Microsoft, qwen-zimage for OpenAI/Meta/unknown). "
     "All are CUDA-ONLY -- install the qwen-zimage extra. There is no CPU or MPS profile for "
     "invisible-watermark removal."
 )
@@ -329,9 +331,9 @@ _cpu_offload_option = click.option(
         "Offload model components to CPU between CUDA calls instead of keeping the "
         "whole pipeline in VRAM, at the cost of speed. Forces the face stack to "
         "offload instead of using automatic residency, on every profile. It reaches "
-        "the global stack of qwen-zimage and sdxl-zimage, which also stream theirs "
-        "automatically on a card too small to hold it; chroma-zimage keeps its "
-        "global stack resident either way."
+        "the global stack of qwen-zimage, qwen21-zimage, and sdxl-zimage, which also "
+        "stream theirs automatically on a card too small to hold it; chroma-zimage "
+        "keeps its global stack resident either way."
     ),
 )
 

@@ -519,12 +519,13 @@ The same option exists on `all` and `batch`, and as
 
 | Pipeline | When to use it |
 | --- | --- |
-| `qwen-zimage` | Default. Qwen-Image-2512 global pass plus a SAM-masked Z-Image face stage |
+| `qwen-zimage` | Default (Apache-2.0). Qwen-Image-2512 global pass plus a SAM-masked Z-Image face stage |
+| `qwen21-zimage` | Opt-in Qwen-Image-2.1 global pass (`texture-fix-vae` + Canny ControlNet) plus the same Z-Image face stage. **Qwen Research License: non-commercial research, evaluation, and personal use only (not for commercial use)** |
 | `sdxl-zimage` | The same recipe and face stage on an SDXL global pass, at a higher denoise |
 | `chroma-zimage` | The same face stage on an Apache-2.0 Chroma1 global pass; explicit OpenAI use needs a higher floor than qwen-zimage |
-| `auto` | Pick the engine from provenance: sdxl-zimage for Google, chroma-zimage for Microsoft, qwen-zimage for OpenAI, unknown, and an explicitly selected Meta cohort |
+| `auto` | Pick the commercial-safe engine from provenance: sdxl-zimage for Google, chroma-zimage for Microsoft, qwen-zimage for OpenAI, unknown, and an explicitly selected Meta cohort |
 
-**All four are CUDA-only.** There is no CPU or MPS profile for invisible-watermark
+**All five are CUDA-only.** There is no CPU or MPS profile for invisible-watermark
 removal. The former `controlnet`, `sdxl`, `qwen` and `default` profiles were removed
 rather than kept as a CPU path: none of them matched this recipe's face preservation,
 so offering them implied a quality the library no longer delivers. Passing a retired
@@ -561,9 +562,9 @@ remove-ai-watermarks invisible image.png -o clean.png \
   --pipeline qwen-zimage --text-manifest verified-lines.json --force
 ```
 
-The option works with `qwen-zimage`, `sdxl-zimage`, `chroma-zimage`, and `auto`.
-Each concrete profile reconstructs the donor through its own already loaded VAE;
-for Google provenance, `auto` therefore keeps the normal SDXL route.
+The option works with `qwen-zimage`, `qwen21-zimage`, `sdxl-zimage`, `chroma-zimage`,
+and `auto`. Each concrete profile reconstructs the donor through its own already
+loaded VAE; for Google provenance, `auto` therefore keeps the normal SDXL route.
 
 ``verified: true`` may also be set by an automated operator that attests
 machine-verified geometry: stability-gated detector boxes inside sane caps. Such
@@ -634,12 +635,12 @@ reach for one only when you know why the default is wrong for your file.
 | --- | --- |
 | `--strength` | Denoising strength, 0.0-1.0. Default is profile- and vendor-adaptive; see [choose a strength cohort](#choose-a-strength-cohort). Raising it removes more and drifts further from the original. |
 | `--vendor` | Strength cohort, and an assertion that the watermark is present. |
-| `--pipeline` | Profile: `qwen-zimage` (default), `sdxl-zimage`, `chroma-zimage`, `auto`. |
+| `--pipeline` | Profile: `qwen-zimage` (default), `qwen21-zimage` (Qwen Research License: non-commercial/personal use only), `sdxl-zimage`, `chroma-zimage`, `auto`. |
 | `--seed` | Fixed at 0 by default: every profile is certified at that seed, and removal near the floor is seed-dependent. |
 | `--controlnet-scale` | Canny ControlNet conditioning on the global stage. Higher keeps the original structure and text closer. |
 | `--humanize` | Analog film grain, 0 = off, typical 2.0-6.0. |
 | `--unsharp` | Unsharp-mask sharpening, 0 = off. |
-| `--adaptive-polish` / `--no-adaptive-polish` | Overrides the profile's own choice. Unset lets the profile decide: off for `qwen-zimage`, whose output already matches the input's detail level, on for `sdxl-zimage`. |
+| `--adaptive-polish` / `--no-adaptive-polish` | Overrides the profile's own choice. Unset lets the profile decide: off for `qwen-zimage` and `qwen21-zimage`, whose outputs already match the input's detail level, on for `sdxl-zimage`. |
 | `--max-resolution` | Cap the long side before diffusion; 0 = native. |
 | `--tile`, `--tile-size`, `--tile-overlap` | Tiled regeneration for large inputs, as above. |
 | `--cpu-offload` | Stream model components between CPU and GPU to lower CUDA memory pressure, at the cost of speed. |

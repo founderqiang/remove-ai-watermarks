@@ -15,6 +15,7 @@ from remove_ai_watermarks._internal.watermark_profiles import (
     DEFAULT_PROFILE,
     INVISIBLE_EXTRA,
     PROFILE_CHOICES,
+    QWEN21_ZIMAGE_PROFILE,
     QWEN_ZIMAGE_PROFILE,
     REMOVAL_MODULES,
     SDXL_ZIMAGE_PROFILE,
@@ -175,9 +176,9 @@ class WatermarkRemover:
             return
         logger.warning(
             "--cpu-offload does not reach the global stack of the '%s' pipeline: only "
-            "qwen-zimage and sdxl-zimage stream their global model between CUDA calls. "
-            "The face stage still honours the flag, so below the face-stage residency "
-            "floor this run behaves as if --cpu-offload were absent.",
+            "qwen-zimage, qwen21-zimage, and sdxl-zimage stream their global model "
+            "between CUDA calls. The face stage still honours the flag, so below the "
+            "face-stage residency floor this run behaves as if --cpu-offload were absent.",
             self.model_profile,
         )
 
@@ -191,6 +192,10 @@ class WatermarkRemover:
             elif self.model_profile == CHROMA_ZIMAGE_PROFILE:
                 from remove_ai_watermarks._internal.chroma_zimage_pipeline import (
                     ChromaZImagePipeline as _Pipeline,
+                )
+            elif self.model_profile == QWEN21_ZIMAGE_PROFILE:
+                from remove_ai_watermarks._internal.qwen_zimage_pipeline import (
+                    Qwen21ZImagePipeline as _Pipeline,
                 )
             else:
                 from remove_ai_watermarks._internal.qwen_zimage_pipeline import (

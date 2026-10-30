@@ -85,8 +85,10 @@ Install the `qwen-zimage` extra:
 uv tool install --force "remove-ai-watermarks[qwen-zimage]"
 ```
 
-Both remaining profiles run a Z-Image face stage on the DiffSynth runtime, so
-both need this extra. The third profile, `chroma-zimage`, uses diffusers'
+The `qwen-zimage`, `qwen21-zimage`, and `sdxl-zimage` profiles run a Z-Image face
+stage on the DiffSynth runtime, so all three need this extra (`qwen21-zimage` uses
+`Qwen/Qwen-Image-2.1` under the non-commercial Qwen Research License, for research
+and personal use only). `chroma-zimage` uses diffusers'
 ChromaImg2ImgPipeline instead of DiffSynth for its global stage but inherits
 the same face stage, so it needs this extra too. The extra also installs
 SentencePiece for Chroma1-HD's binary `spiece.model`; without that backend,
@@ -95,7 +97,7 @@ dependencies; `diffusion` on its own covers the torch and diffusers imports but
 not the face stage or Chroma tokenizer, so it is not enough to run a removal.
 
 **An NVIDIA GPU is required for the diffusion profiles.** `qwen-zimage`,
-`sdxl-zimage` and `chroma-zimage` are CUDA-only, and
+`qwen21-zimage`, `sdxl-zimage` and `chroma-zimage` are CUDA-only, and
 construction refuses any other device rather than falling back to a slow or broken
 one. There is no CPU, MPS or XPU path for those profiles. The specialized API for
 the validated local Microsoft Paint format uses the `pixels` extra and no GPU.

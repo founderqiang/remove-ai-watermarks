@@ -85,6 +85,28 @@ no low-strength denoise control. It can be evaluated as a separate hosted edit
 strategy when credentials are available, but it is not a drop-in replacement
 for the partial-regeneration mechanism measured here.
 
+Qwen-Image-2.1 (issue #111) was evaluated separately on the same seven tracked
+originals on 2026-10-29 across single-stage and two-stage modes: pure 64-channel
+16x RGBA VAE round-trip (`Qwen/Qwen-Image-2.1` stock VAE and
+`madebyollin/texture-fix-vae-for-qwen-image-2.1`), four-step Canny img2img
+(`alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union` with and without the 128
+fused `lightx2v/Qwen-Image-2.1-Lightning` LoRA projections), 40-step two-phase
+`edit_image` reference switching, and the full two-stage `qwen21-zimage` profile
+(unfused 4-step `Qwen-Image-2.1` + `texture-fix-vae` + Canny followed by the
+shared `Z-Image-Turbo` face stage). At strength `0.10`, unfused four-step Canny
+cleared the zero-face OpenAI SynthID posters in the official OpenAI provenance
+API and reached `0.136` and `0.336` NED (`0.299` with the texture-fix VAE) on
+the light and dark posters (`0.053` and `0.052` image LPIPS, `28.3` and `28.5`
+dB PSNR). Pairing it with `Z-Image-Turbo` in `--pipeline qwen21-zimage` recovered
+face identity (`0.874` ArcFace cosine at `0.35` and `0.890` at `0.20` on the
+18-face Google grid `y48j3c`, `0.863` on the 9-face OpenAI grid `10_31_08 AM`)
+and cleared the 9-face OpenAI composite at `0.20` (`QWEN21_ZIMAGE_OPENAI_STRENGTH = 0.20`).
+Because `Qwen/Qwen-Image-2.1` is released under the non-commercial Qwen Research
+License, `qwen21-zimage` is shipped as an explicit opt-in profile for
+non-commercial research, evaluation, and personal use only. Full tables and
+oracle records are in
+[`docs/chroma1-engine-research.md`](../../../docs/chroma1-engine-research.md#qwen-image-21-as-a-global-stage-2026-10-29).
+
 The OCR floor is the source image scored against the hand-verified text. Use
 `added_cer = text_cer - ocr_floor` when interpreting pipeline damage, because the
 unchanged poster sources already score 0.127 CER. `oracle_rechecked=true` marks

@@ -154,13 +154,15 @@ as SynthID lives in the pixels everywhere, including inside the glyphs, so
 frozen text regions would keep the watermark
 ([text protection research](text-protection-research.md)).
 
-`qwen-zimage` is the default profile. `sdxl-zimage` and `chroma-zimage` keep
-the same face stage and swap the global model. `auto` picks sdxl-zimage for
-Google provenance, chroma-zimage for Microsoft, and qwen-zimage otherwise.
+`qwen-zimage` is the default profile (Apache-2.0). `qwen21-zimage`, `sdxl-zimage`,
+and `chroma-zimage` keep the same face stage and swap the global model (`qwen21-zimage`
+uses `Qwen/Qwen-Image-2.1` under the non-commercial Qwen Research License, for research
+and personal use only). `auto` picks sdxl-zimage for Google provenance, chroma-zimage
+for Microsoft, and qwen-zimage otherwise, keeping `auto` commercial-safe.
 All are CUDA only.
-Qwen and SDXL condition the global stage on a canny edge map, which preserves
-structure but not identity or exact texture. Chroma1 is a plain strength pass
-without Canny.
+Qwen-Image-2512, Qwen-Image-2.1, and SDXL condition the global stage on a canny edge
+map, which preserves structure but not identity or exact texture. Chroma1 is a plain
+strength pass without Canny.
 There is no blanket fidelity ordering across providers or content types. At the
 current Google operating points, however, the 2026-09-15 three-carrier replication
 favored `sdxl-zimage` in whole-image metrics, localized face-crop LPIPS, and seven
@@ -193,11 +195,24 @@ fresh-font and silhouette variants visibly changed typography. The higher-fideli
 and line geometry. It builds its donor internally but still requires an independently
 clean global anchor. Automatic OCR and line-box proposals are not reliable enough to
 remove those requirements, and exact oracle results do not establish a general mask,
-seed, runtime, or provider operating range. Qwen-Image-2.0 is hosted-only. Qwen-Image-2.1
-(issue #111) has open weights, but its Diffusers pipeline uses `image=` only as
-reference conditioning and starts the target latents from noise, with no `strength`
-or latent noise-mask input. Its Qwen Research License also limits the weights to
-non-commercial research and evaluation, so it is not a supported-profile candidate.
+seed, runtime, or provider operating range. Qwen-Image-2.0 is hosted-only. Qwen-Image-2.1 (issue #111) has open weights and
+is available as the opt-in `--pipeline qwen21-zimage` profile:
+although its Diffusers wrapper exposes `image=` only as reference conditioning from
+pure noise, DiffSynth's `QwenImagePipeline` supports partial-noise img2img with
+`alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union` Canny as well as two-phase
+`edit_image` reference switching, and `madebyollin/texture-fix-vae-for-qwen-image-2.1`
+reduces its 64-channel 16x RGBA VAE's face and text distortion. On the seven tracked
+evaluation carriers, unfused four-step Canny cleared the zero-face OpenAI SynthID
+posters at `0.10` with better poster OCR and PSNR than `qwen-zimage`, while pairing it
+with the shared `Z-Image-Turbo` face stage in `qwen21-zimage` recovered face identity
+(`0.874` ArcFace cosine, `0.043` face LPIPS, `0.175` whole-image LPIPS on the 18-face
+Google portrait grid at `0.35`, and `0.863` cosine on the 9-face OpenAI portrait grid)
+and cleared the 9-face OpenAI composite at `0.20` (`QWEN21_ZIMAGE_OPENAI_STRENGTH = 0.20`).
+Because `Qwen/Qwen-Image-2.1` is released under the non-commercial Qwen Research
+License (`Qwen-Image-2512` and `Z-Image-Turbo` are Apache-2.0), `qwen21-zimage` is
+restricted to non-commercial research, evaluation, and personal use and is never
+selected by `--pipeline auto`
+([engine research](chroma1-engine-research.md#qwen-image-21-as-a-global-stage-2026-10-29)).
 Exact experiments, controls, and pass rates are kept in
 [`text-protection-research.md`](text-protection-research.md) and the
 [`fidelity` evaluation record](../data/evaluations/fidelity/README.md).
@@ -329,6 +344,14 @@ rounding up. Google's source-fresh candidate cleared three independent CJK carri
 types after the original content matrix found CJK and Cyrillic to be the limiting
 strata. The small corpora make these operating points, not universal thresholds.
 
+`qwen21-zimage` uses the same resolution-adaptive unknown curve and Google (`0.35`),
+Microsoft (`0.15`), and Meta (`0.10`) cohorts as `qwen-zimage`, but sets OpenAI to
+`0.20` (`QWEN21_ZIMAGE_OPENAI_STRENGTH = 0.20`): because `Qwen-Image-2.1` +
+`texture-fix-vae` preserves ~3.9 dB higher background fidelity than `Qwen-Image-2512`
+at `0.15625`, the nine-face OpenAI carrier (`10_31_08 AM`, 46.2% face box coverage)
+remained detected after source-cropped `Z-Image` face compositing at `0.15625` and
+cleared at `0.20`.
+
 `sdxl-zimage` reads it from the C2PA issuer, on a flat ladder:
 
 - OpenAI: `0.15`;
@@ -368,6 +391,7 @@ are certified at a fixed seed. The live resolver is
 | Pipeline | Main limit |
 | --- | --- |
 | `qwen-zimage` | CUDA only, large model stack, and limited broad certification across seeds and content. |
+| `qwen21-zimage` | CUDA only, non-commercial Qwen Research License (research and personal use only; not for commercial use), and an OpenAI floor of `0.20` on multi-face composites. |
 | `sdxl-zimage` | CUDA only. Its strength ladder is flat per vendor, not a resolution curve, because flat values are what was measured. |
 | `chroma-zimage` | CUDA only. Higher Google and Meta floors than qwen; no safe content-adaptive Google arm exists yet. |
 | `auto` | CUDA only. Routes Google to sdxl-zimage, Microsoft to chroma-zimage, and everything else to qwen-zimage. |
@@ -407,8 +431,9 @@ memory use but introduces a downscale and upscale round trip.
 
 `--tile` preserves the input dimensions while running the diffusion stage in
 overlapping tiles. It avoids the explicit downscale, but it is not pixel
-lossless: each tile is independently regenerated. With `qwen-zimage`, only the
-global Qwen stage is tiled; the face stage runs after tile blending.
+lossless: each tile is independently regenerated. With `qwen-zimage` and
+`qwen21-zimage`, only the global Qwen stage is tiled; the face stage runs after
+tile blending.
 
 ### CPU offload trades speed for VRAM
 
@@ -416,8 +441,8 @@ global Qwen stage is tiled; the face stage runs after tile blending.
 every profile, streaming weights instead of pinning them. It reduces CUDA memory
 pressure at the cost of speed.
 
-It reaches the global stack of `qwen-zimage` and `sdxl-zimage`. That stack is
-each profile's own, and `chroma-zimage` loads its stack with a plain `.to(device)`.
+It reaches the global stack of `qwen-zimage`, `qwen21-zimage`, and `sdxl-zimage`.
+That stack is each profile's own, and `chroma-zimage` loads its stack with a plain `.to(device)`.
 On a card below the face-stage residency floor, where the face stack was already
 offloading, the flag changes nothing at all for that profile: the run behaves as
 if it were absent. The library says so on the way past, as a warning ahead of the

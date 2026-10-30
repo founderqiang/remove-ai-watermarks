@@ -120,10 +120,12 @@ class TestModelProfiles:
 
     def test_canonical_profiles_unchanged(self):
         assert normalize_profile("qwen-zimage") == "qwen-zimage"
+        assert normalize_profile("qwen21-zimage") == "qwen21-zimage"
         assert normalize_profile("sdxl-zimage") == "sdxl-zimage"
 
     def test_underscore_spellings_resolve(self):
         assert normalize_profile("qwen_zimage") == "qwen-zimage"
+        assert normalize_profile("qwen21_zimage") == "qwen21-zimage"
         assert normalize_profile("  SDXL_ZImage ") == "sdxl-zimage"
 
     def test_retired_names_no_longer_resolve_to_a_profile(self):
@@ -146,8 +148,10 @@ class TestResolveAdaptivePolish:
         # moves the output away from upstream. An SDXL global pass leaves the softer
         # result the polish exists for.
         assert resolve_adaptive_polish(None, "qwen-zimage") is False
+        assert resolve_adaptive_polish(None, "qwen21-zimage") is False
         assert resolve_adaptive_polish(None, "sdxl-zimage") is True
         assert resolve_adaptive_polish(None, "qwen_zimage") is False
+        assert resolve_adaptive_polish(None, "qwen21_zimage") is False
 
     def test_an_explicit_choice_always_wins(self):
         from remove_ai_watermarks._internal.watermark_profiles import resolve_adaptive_polish
@@ -244,11 +248,16 @@ class TestResolveStrength:
         assert QWEN_ZIMAGE_GOOGLE_STRENGTH == 0.35
         # The floor holds at every size, not only above the curve's top rung.
         assert resolve_strength(None, "google", "qwen-zimage", size=(2000, 1850)) == QWEN_ZIMAGE_GOOGLE_STRENGTH
+        assert resolve_strength(None, "openai", "qwen21-zimage", size=(2000, 1850)) == pytest.approx(0.20)
+        assert resolve_strength(None, "google", "qwen21-zimage", size=(2000, 1850)) == QWEN_ZIMAGE_GOOGLE_STRENGTH
+        assert resolve_strength(None, None, "qwen21-zimage", size=(600, 500)) == pytest.approx(0.084)
 
     def test_qwen_zimage_without_a_size_fails_loudly(self):
         """A missing size must not silently fall back to some vendor value."""
         with pytest.raises(ValueError, match="size is required"):
             resolve_strength(None, "openai", "qwen-zimage")
+        with pytest.raises(ValueError, match="size is required"):
+            resolve_strength(None, "openai", "qwen21-zimage")
 
     @pytest.mark.parametrize(
         ("vendor", "expected"),

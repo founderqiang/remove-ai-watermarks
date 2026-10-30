@@ -1032,7 +1032,8 @@ conditioning, never by copying original pixels.**
 > **Superseded in 0.24.0.** The `controlnet`, `sdxl`, `qwen` and `default` profiles
 > were removed, and a retired name is now rejected at parse time rather than routed
 > onward. Current `--pipeline` values are `qwen-zimage` (the default),
-> `sdxl-zimage`, `chroma-zimage`, and `auto`; all are CUDA-only and share the
+> `qwen21-zimage` (non-commercial Qwen Research License), `sdxl-zimage`,
+> `chroma-zimage`, and `auto`; all are CUDA-only and share the
 > Z-Image face stage. The bullets below are a record of what was measured
 > on the removed profiles, kept because the oracle verdicts are still the evidence the
 > current design rests on.

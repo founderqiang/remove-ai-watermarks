@@ -27,6 +27,7 @@ from remove_ai_watermarks._internal.watermark_profiles import (
     CHROMA_ZIMAGE_PROFILE,
     GLOBAL_OFFLOAD_PROFILES,
     PROFILE_CHOICES,
+    QWEN21_ZIMAGE_PROFILE,
     QWEN_ZIMAGE_PROFILE,
     SDXL_ZIMAGE_PROFILE,
     global_offload_supported,
@@ -35,6 +36,7 @@ from remove_ai_watermarks._internal.watermark_remover import WatermarkRemover
 
 OFFLOAD_SUPPORT_CASES = (
     (QWEN_ZIMAGE_PROFILE, True),
+    (QWEN21_ZIMAGE_PROFILE, True),
     (CHROMA_ZIMAGE_PROFILE, False),
     (SDXL_ZIMAGE_PROFILE, True),
     # Auto preloads its concrete Qwen fallback before an image vendor is known.
@@ -69,6 +71,7 @@ class TestGlobalOffloadSupport:
 
     def test_the_underscore_spelling_resolves(self) -> None:
         assert global_offload_supported("qwen_zimage") is True
+        assert global_offload_supported("qwen21_zimage") is True
 
     def test_the_set_names_a_profile_that_exists(self) -> None:
         # A renamed profile must not leave the flag silently unsupported everywhere.
@@ -84,7 +87,7 @@ class TestUnsupportedProfileWarns:
         assert "--cpu-offload" in message
         assert CHROMA_ZIMAGE_PROFILE in message
 
-    @pytest.mark.parametrize("profile", [QWEN_ZIMAGE_PROFILE, SDXL_ZIMAGE_PROFILE])
+    @pytest.mark.parametrize("profile", [QWEN_ZIMAGE_PROFILE, QWEN21_ZIMAGE_PROFILE, SDXL_ZIMAGE_PROFILE])
     def test_a_profile_that_streams_its_global_stack_is_quiet(
         self, profile: str, caplog: pytest.LogCaptureFixture
     ) -> None:

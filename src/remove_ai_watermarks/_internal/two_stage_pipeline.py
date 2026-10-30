@@ -1,10 +1,11 @@
 """The shared two-stage regeneration recipe: a profile global stage plus the Z-Image face stage.
 
 Every removal profile implements this base rather than another profile:
-``qwen-zimage``, ``sdxl-zimage`` and ``chroma-zimage`` each own one global regeneration stage, and a
-future profile (a Flux 2 pass, for instance) plugs in the same way. Everything
-here is shared verbatim, so the face stage, sizing, compositing, the prompt
-cache, and the run orchestration cannot silently diverge between profiles.
+``qwen-zimage``, ``qwen21-zimage``, ``sdxl-zimage`` and ``chroma-zimage`` each own one
+global regeneration stage, and a future profile (a Flux 2 pass, for instance) plugs in
+the same way. Everything here is shared verbatim, so the face stage, sizing,
+compositing, the prompt cache, and the run orchestration cannot silently diverge
+between profiles.
 """
 
 # DiffSynth, torch, transformers, and cv2 expose mostly untyped tensor/array APIs.

@@ -811,3 +811,287 @@ lower safe operating point, the missing Google boundary, broader content
 fidelity, packaging, and product-level tests. Outputs, fidelity logs,
 manifests, and the local timing report are under
 `.local-eval/z-image-turbo-2026-09-27/`.
+
+## Qwen-Image-2.1 as a global stage (2026-10-29)
+
+Verdict: **ship `qwen21-zimage` (`--pipeline qwen21-zimage`) as an explicit
+opt-in two-stage profile for non-commercial research, evaluation, and personal
+use only; keep `qwen-zimage` (`Qwen/Qwen-Image-2512`, Apache-2.0) as the default
+profile and keep `--pipeline auto` restricted to Apache-2.0 / commercial-safe
+profiles**. Although Hugging Face `diffusers` exposes `QwenImageEditPipeline`
+with `image=` only as reference conditioning starting from pure noise,
+DiffSynth-Studio (`diffsynth==2.1.9`, the framework already used by
+`qwen-zimage`) supports native partial-noise `input_image` +
+`denoising_strength` (`QwenImageUnit_Image2Image`), structural Canny ControlNet
+conditioning (`alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union`, Apache-2.0),
+the community texture-repaired decoder
+(`madebyollin/texture-fix-vae-for-qwen-image-2.1`, Apache-2.0), and two-phase
+`edit_image` reference switching (issue #111). Pairing the four-step unfused
+`Qwen-Image-2.1` + `texture-fix-vae` + Canny global pass with the shared
+`Z-Image-Turbo` face stage (`Qwen21ZImagePipeline`) beats `qwen-zimage` across
+all four provider cohorts (OpenAI SynthID, Google SynthID, Microsoft InvisMark,
+and Meta Content Seal), beats or ties `sdxl-zimage-0.50` across all four Google
+SynthID carriers at `s=0.35`, and beats `chroma-zimage-0.125` on the
+face-bearing Microsoft Designer carrier (`ID cos = 0.915` vs `0.889`, `img LPIPS = 0.224`
+vs `0.244`). However, because `Qwen/Qwen-Image-2.1`, `Qwen/Qwen-Image-2.1-Turbo`,
+and `lightx2v/Qwen-Image-2.1-Lightning` are governed by the **Qwen Research
+License** (non-commercial research and evaluation only without a separate
+commercial agreement from Alibaba Cloud), `qwen21-zimage` is never selected by
+`--pipeline auto`.
+
+### Setup and DiffSynth 2.1.9 LoRA loader trap
+
+All runs executed on Modal H100 in bf16 at native geometry (dimensions floored
+to the `/16` latent grid and restored if needed), seed 0, CFG 1.0, and the
+neutral scrub prompt (`high quality, sharp, detailed, faithful to the original`).
+Harness, outputs, manifests, and hash-bound oracle records live under
+`.local-eval/qwen-image-21-2026-10-29/` (`qwen21_ladder.py`).
+
+Three distinct modes were evaluated across the seven tracked originals (plus
+visible-mark-cleaned Google controls for `gemini-web` SynthID verification):
+
+1. **`vae-roundtrip` (`vae-stock` vs `vae-tfix`):** Pure 64-channel 16x RGBA
+   VAE encode-decode with zero diffusion steps, comparing `Qwen/Qwen-Image-2.1`
+   (`vae/diffusion_pytorch_model.safetensors`, `z_dim=64`, spatial `16x`)
+   against `madebyollin/texture-fix-vae-for-qwen-image-2.1` (`alpha_tfix=1.0`
+   decoder weights).
+2. **`canny-lightning` (`canny-l4` / `canny-base4` vs `canny-fused-l4`, each
+   with stock and `tfix` VAEs):** Four effective steps on
+   `FlowMatchScheduler("Qwen-Image-Lightning")` with
+   `alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union` (`scale=1.0` on OpenCV
+   Canny `100/200`), comparing the unfused base `Qwen/Qwen-Image-2.1`
+   transformer against the transformer with all 128 fused
+   `lightx2v/Qwen-Image-2.1-Lightning` (`Qwen-Image-2.1-Lightning-4steps-V1.0-bf16.safetensors`,
+   rank 64, `alpha=0.8`) attention projections (`1.53-1.84 s/image` on H100).
+3. **`ref-switch` (`refswitch-base40` and `refswitch-l8-canny`):** Two-phase
+   mid-trajectory reference switching reproducing the ComfyUI dual-`KSampler`
+   workflow proposed by `@dichiara19` in issue #111. Phase 1 runs with
+   `edit_image=source` concatenated into the DiT token sequence while
+   $\sigma > \sigma_{\text{switch}}$; Phase 2 drops `edit_latents` (`None`) and
+   continues unreferenced from the Phase 1 latent state for
+   $\sigma \le \sigma_{\text{switch}}$ (`13.4 s/image` at `s=0.40` on 40-step
+   base `Qwen-Image-2.1`).
+
+**DiffSynth 2.1.9 LoRA trap:** `GeneralLoRALoader.get_name_dict` in
+`diffsynth/utils/lora/general.py` checks `if ".lora_up." in key:` (underscore)
+and strips `diffusion_model.`, whereas
+`lightx2v/Qwen-Image-2.1-Lightning` stores keys as
+`transformer.transformer_blocks.<idx>.attn.<proj>.lora.up.weight` and
+`.lora.down.weight` (dot). Calling `pipe.load_lora(...)` silently fuses **0
+tensors** and runs the unfused base transformer. Stripping `transformer.` and
+matching `.lora.up.weight` / `.lora.down.weight` explicitly fused all
+**`128/128`** linear projections (`to_q`, `to_k`, `to_v`, `to_out.0` across 32
+blocks). Both the unfused (`canny-l4` / `canny-base4`) and 128-layer fused
+(`canny-fused-l4`) runs were retained and compared head-to-head.
+
+### 1. 64-channel 16x RGBA VAE ceiling (`vae-roundtrip`)
+
+Across all seven originals, `Qwen/Qwen-Image-2.1`'s 64-channel 16x RGBA VAE
+reaches a mean PSNR of **35.68 dB** (`32.27-37.31 dB`), mean SSIM **0.9201**,
+and mean 512-pixel LPIPS **0.0010** -- +6.27 dB higher PSNR and 25x lower
+512-pixel LPIPS than `FLUX.2-klein`'s 32-channel VAE (`29.41 dB`, `0.0258`).
+On `scripts/fidelity_metrics.py`, `madebyollin/texture-fix-vae-for-qwen-image-2.1`
+(`vae-tfix`) substantially improves full-resolution perceptual distance, face
+texture, and OCR over the stock VAE:
+
+| Carrier | Variant | text NED | ID cos | face LPIPS | lapvar | img LPIPS | SSIM | PSNR (dB) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| OpenAI light poster (`02_02_23 PM`) | `vae-stock` | 0.092 | - | - | - | 0.030 | 0.903 | 36.8 |
+| OpenAI light poster (`02_02_23 PM`) | `vae-tfix` | **0.079** | - | - | - | **0.017** | **0.916** | 36.7 |
+| Google 18-face grid (`y48j3c`) | `vae-stock` | - | 0.961 | 0.039 | 0.728 | 0.061 | 0.870 | **35.3** |
+| Google 18-face grid (`y48j3c`) | `vae-tfix` | - | **0.967** | **0.018** | **0.831** | **0.025** | 0.869 | 34.4 |
+
+Pure VAE encode-decode does not remove SynthID (`vae-stock` on `02_02_23 PM`
+returned `detected` on the official OpenAI provenance API), but the 64-channel
+bottleneck plus `vae-tfix` removes the VAE reconstruction floor as a source of
+glyph and skin-texture loss.
+
+### 2. Provider-oracle boundaries (OpenAI API and Google `@SynthID`)
+
+OpenAI checks used `scripts/provider_oracles.py check-openai` (`POST /v1/content_provenance_checks`,
+SynthID read separately from C2PA). Google checks used `scripts/provider_oracles.py prepare` /
+`record` / `verify` on `gemini-web` across three authenticated browser slots
+(`personal-u0`, `veedma-u1`, `lorsey-u2`) against visible-mark-cleaned,
+metadata-stripped controls (`3mc4t9` positive control verified `detected` in
+all three accounts before testing candidates; `synthid.com` returned `Please
+sign in before detection.` in both anonymous and signed-in Chrome sessions):
+
+| Cohort | Carrier(s) | Mode & Variant | `s=0.05` | `s=0.10` | `s=0.15625` | `s=0.20` | `s=0.25` | `s=0.35` | `s=0.40` | `s=0.45` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| OpenAI | all 3 (`10_31_08`, `02_02_23`, `02_03_55`) | `canny-l4` (no LoRA) | 3/3 `detected` | **3/3 `not_detected`** | 3/3 `not_detected` | 3/3 `not_detected` | 3/3 `not_detected` | - | - | - |
+| OpenAI | all 3 (`10_31_08`, `02_02_23`, `02_03_55`) | `canny-l4-tfix` (no LoRA + tfix VAE) | - | **3/3 `not_detected`** | - | - | - | - | - | - |
+| OpenAI | all 3 (`10_31_08`, `02_02_23`, `02_03_55`) | `canny-fused-l4` (128/128 LoRA) | 3/3 `detected` | **3/3 `not_detected`** | 3/3 `not_detected` | - | - | - | - | - |
+| OpenAI | all 3 (`10_31_08`, `02_02_23`, `02_03_55`) | `refswitch-base40` (`sw=0.30` & `sw=0.40`) | - | - | - | - | **3/3 `not_detected`** | - | - | - |
+| Google | `3mc4t9` (5-face party scene) | `canny-fused-l4` (128/128 LoRA) | - | **`not_detected`** (`u/2`) | - | **`not_detected`** (`u/0`) | - | **`not_detected`** (`u/0`) | - | **`not_detected`** (`u/0`) |
+| Google | `3mc4t9` (5-face party scene) | `canny-base4` (no LoRA) | - | - | - | - | - | **`not_detected`** (`u/1`) | - | - |
+| Google | `3mc4t9` (5-face party scene) | `refswitch-base40-sw0.30` (`ref=3, noref=7`) | - | - | - | - | `detected` ("Part of...", `u/2`) | - | - | - |
+| Google | `3mc4t9` (5-face party scene) | `refswitch-base40-sw0.40` & `sw0.46` (`ref=7/5, noref=9/11`) | - | - | - | - | - | - | **`not_detected`** (`u/1`) | - |
+
+Two mechanism findings stand out:
+
+- **Four-step Canny lowers the OpenAI first-clean boundary across all three
+  tracked carriers to `(0.05, 0.10]`.** Unlike `Z-Image-Turbo` (where the
+  9-face grid `10_31_08 AM` stayed `detected` through `0.15` and only cleared
+  at `0.20`), both `canny-l4` and `canny-fused-l4` clear all three OpenAI
+  originals at `s=0.10` ($\sigma_0 = 0.2500$).
+- **Two-phase reference switching (`refswitch-base40`) confirms both the
+  mechanism and the Google threshold reported in issue #111.** Keeping
+  `edit_image` active during the high-noise prefix anchors global structure so
+  strongly that `s=0.40, sw=0.30` (`ref=9, noref=7`) produces nearly the same
+  PSNR (`27.67 dB` mean) as `s=0.25, sw=0.30` (`ref=3, noref=7`, `27.78 dB`
+  mean). However, because `edit_latents` are the watermarked source latents,
+  keeping them down to $\sigma_{\text{switch}} = 0.30$ (`7` unreferenced tail
+  steps) only clears OpenAI and leaves Google SynthID partially `detected` on
+  `3mc4t9`; raising the handoff to `s=0.40, sw=0.40` (`9` unreferenced steps)
+  or `sw=0.46` (`11` unreferenced steps) is required to reach `not_detected` on
+  Google.
+
+### 3. Fidelity comparison (`scripts/fidelity_metrics.py`)
+
+At their respective oracle-clean OpenAI rungs (`s=0.10` for four-step Canny,
+`s=0.25, sw=0.30` for 40-step reference switching), compared against shipped
+`qwen-zimage` (`0.15625`), `sdxl-zimage` (`0.15`), and `Z-Image-Turbo` (`0.20`):
+
+| Carrier | Variant | Oracle | text NED | ID cos | face LPIPS | lapvar | img LPIPS | SSIM | PSNR (dB) |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| OpenAI light poster (`02_02_23 PM`, OCR floor `0.127`) | `canny-l4` `s=0.10` (no LoRA) | `not_detected` | **0.136** | - | - | - | 0.057 | 0.859 | **28.3** |
+| OpenAI light poster (`02_02_23 PM`, OCR floor `0.127`) | `canny-l4-tfix` `s=0.10` | `not_detected` | 0.178 | - | - | - | **0.053** | **0.865** | **28.3** |
+| OpenAI light poster (`02_02_23 PM`, OCR floor `0.127`) | `canny-fused-l4-tfix` `s=0.10` | `not_detected` | 0.258 | - | - | - | 0.063 | 0.837 | 27.6 |
+| OpenAI light poster (`02_02_23 PM`, OCR floor `0.127`) | `refswitch-base40` `s=0.25, sw=0.30` | `not_detected` | 0.273 | - | - | - | **0.051** | 0.847 | 27.7 |
+| OpenAI dark poster (`02_03_55 PM`, OCR floor `0.214`) | `canny-l4-tfix` `s=0.10` | `not_detected` | **0.299** | - | - | - | **0.052** | **0.861** | **28.5** |
+| OpenAI dark poster (`02_03_55 PM`, OCR floor `0.214`) | `canny-l4` `s=0.10` (no LoRA) | `not_detected` | 0.336 | - | - | - | 0.055 | 0.855 | **28.5** |
+| OpenAI dark poster (`02_03_55 PM`, OCR floor `0.214`) | `canny-fused-l4-tfix` `s=0.10` | `not_detected` | 0.328 | - | - | - | 0.061 | 0.840 | 27.9 |
+| OpenAI dark poster (`02_03_55 PM`, OCR floor `0.214`) | `refswitch-base40` `s=0.25, sw=0.30` | `not_detected` | 0.326 | - | - | - | **0.052** | 0.841 | 27.7 |
+| OpenAI 9-face grid (`10_31_08 AM`, global only) | `canny-l4` `s=0.10` (no LoRA) | `not_detected` | - | **0.803** | **0.058** | 0.969 | **0.057** | 0.872 | **31.4** |
+| OpenAI 9-face grid (`10_31_08 AM`, global only) | `canny-fused-l4` `s=0.10` | `not_detected` | - | 0.798 | 0.062 | **0.992** | 0.062 | 0.860 | 30.7 |
+| OpenAI 9-face grid (`10_31_08 AM`, global only) | `refswitch-base40` `s=0.25, sw=0.30` | `not_detected` | - | 0.772 | 0.060 | 0.981 | 0.064 | 0.844 | 30.1 |
+
+At `s=0.10` ($\sigma_0 = 0.25$), four Euler steps already have a small average
+step size ($\Delta\sigma = 0.0625$, equivalent to a 16-step full trajectory),
+so the unfused base `Qwen-Image-2.1` transformer + Canny (`canny-l4` /
+`canny-l4-tfix`) preserves small poster typography better (`0.136` and `0.299`
+NED) than the 128-layer fused 4-step Lightning LoRA (`0.258` and `0.328` NED),
+whose velocity amplification is tuned for full $\sigma_0 = 1.0 \to 0$
+generation.
+
+On the Google face carriers (`3mc4t9` 5-face party scene and `y48j3c` 18-face
+portrait grid, global-only):
+
+| Carrier | Variant | Oracle (`3mc4t9`) | faces | ID cos | face LPIPS | lapvar | img LPIPS | SSIM | PSNR (dB) |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Google 5-face (`3mc4t9`) | `canny-fused-l4` `s=0.10` | `not_detected` | 5/5 | **0.723** | **0.066** | 0.729 | **0.098** | **0.733** | **23.5** |
+| Google 5-face (`3mc4t9`) | `canny-fused-l4` `s=0.20` | `not_detected` | 5/5 | 0.573 | 0.085 | 0.722 | 0.142 | 0.665 | 21.5 |
+| Google 5-face (`3mc4t9`) | `canny-fused-l4` `s=0.35` | `not_detected` | 5/5 | 0.443 | 0.105 | 0.678 | 0.188 | 0.616 | 19.9 |
+| Google 5-face (`3mc4t9`) | `canny-base4` `s=0.35` (no LoRA) | `not_detected` | 5/5 | 0.535 | 0.104 | 0.551 | 0.178 | 0.656 | 21.1 |
+| Google 5-face (`3mc4t9`) | `refswitch-base40` `s=0.40, sw=0.40` | `not_detected` | 5/5 | 0.646 | 0.070 | **0.750** | 0.117 | 0.665 | 21.9 |
+| Google 5-face (`3mc4t9`) | `refswitch-base40` `s=0.40, sw=0.46` | `not_detected` | 5/5 | 0.588 | 0.078 | 0.749 | 0.144 | 0.634 | 21.0 |
+| Google 18-face (`y48j3c`) | `canny-fused-l4-tfix` `s=0.10` | - | 18/18 | **0.773** | **0.062** | 0.804 | **0.099** | **0.710** | 26.7 |
+| Google 18-face (`y48j3c`) | `canny-fused-l4-tfix` `s=0.20` | `indeterminate` | 18/18 | 0.691 | 0.083 | 0.747 | 0.137 | 0.656 | 25.1 |
+| Google 18-face (`y48j3c`) | `canny-fused-l4-tfix` `s=0.35` | - | 18/18 | 0.610 | 0.096 | 0.685 | 0.164 | 0.621 | 23.8 |
+| Google 18-face (`y48j3c`) | `refswitch-base40` `s=0.25, sw=0.30` | - | 18/18 | **0.773** | 0.066 | 0.814 | 0.105 | 0.703 | **27.1** |
+| Google 18-face (`y48j3c`) | `refswitch-base40` `s=0.40, sw=0.40` | - | 18/18 | 0.706 | 0.078 | **0.815** | 0.128 | 0.666 | 25.8 |
+| Google 18-face (`y48j3c`) | `refswitch-base40` `s=0.40, sw=0.46` | - | 18/18 | 0.651 | 0.087 | 0.814 | 0.145 | 0.644 | 24.9 |
+
+Even with the 64-channel RGBA VAE and `madebyollin` texture-fix decoder, a
+global-only `Qwen-Image-2.1` pass drops ArcFace identity cosine to `0.588-0.723`
+on `3mc4t9` and `0.610-0.773` on `y48j3c`, versus `0.933` and `0.852` for
+two-stage `qwen-zimage` (whose source-conditioned `Z-Image-Turbo` face stage
+restores masked face crops after the global scrub). At the higher Google
+strengths (`s=0.35-0.40`), `refswitch-base40` (`sw=0.40`) retains notably higher
+face identity (`0.646` vs `0.443` on `3mc4t9`, `0.706` vs `0.610` on `y48j3c`)
+and lower whole-image LPIPS (`0.117` vs `0.188`) than four-step Canny at
+`s=0.35`, at the cost of 7.4x slower H100 inference (`13.4 s` vs `1.8 s`).
+
+#### Two-stage `qwen21-zimage` (`Qwen-Image-2.1` + `texture-fix-vae` + Canny + `Z-Image-Turbo` face stage)
+
+Pairing the four-step `Qwen-Image-2.1` + `madebyollin/texture-fix-vae-for-qwen-image-2.1` + `alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union` Canny global stage with the shared `Z-Image-Turbo` + SAM + YuNet face stage (`--pipeline qwen21-zimage`) restores face identity while keeping `Qwen-Image-2.1`'s stronger background fidelity:
+
+| Carrier | Two-stage variant | Strength | Oracle | faces | ID cos | face LPIPS | lapvar | img LPIPS | SSIM | PSNR (dB) |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Google 18-face (`y48j3c`) | `qwen21-zimage` (unfused) | `0.20` | - | 18/18 | **0.890** | **0.038** | 0.536 | **0.125** | **0.710** | **26.4** |
+| Google 18-face (`y48j3c`) | `qwen21-zimage` (unfused) | `0.35` | - | 18/18 | **0.874** | **0.043** | 0.515 | **0.175** | **0.684** | **24.9** |
+| Google 18-face (`y48j3c`) | `qwen21-zimage-lora` (fused) | `0.20` | - | 18/18 | 0.877 | 0.042 | 0.659 | 0.140 | 0.678 | 25.4 |
+| Google 18-face (`y48j3c`) | `qwen21-zimage-lora` (fused) | `0.35` | - | 18/18 | 0.851 | 0.050 | 0.616 | 0.193 | 0.648 | 24.0 |
+| Google 18-face (`y48j3c`) | `qwen-zimage` (`Qwen-Image-2512`) | `0.20` | `not_detected` | 18/18 | 0.877 | 0.040 | 0.525 | 0.252 | 0.659 | 24.8 |
+| OpenAI 9-face grid (`10_31_08 AM`) | `qwen21-zimage` (unfused) | `0.15625` | `detected` (`req_3b58ff787cee4d22ba2934cb7e7e8ae4`) | 9/9 | **0.863** | **0.051** | 0.630 | **0.071** | **0.875** | **31.3** |
+| OpenAI 9-face grid (`10_31_08 AM`) | `qwen21-zimage` (unfused) | `0.20` | **`not_detected`** (`req_2e599929c32747a5b1a5a6c39623b802`) | 9/9 | 0.840 | 0.055 | 0.625 | 0.081 | 0.867 | 30.8 |
+| OpenAI 9-face grid (`10_31_08 AM`) | `qwen21-zimage` (unfused) | `0.25` | `not_detected` (`req_5712ed8cb38e42ae9ba60df7c915659f`) | 9/9 | 0.819 | 0.060 | 0.620 | 0.091 | 0.858 | 30.3 |
+| OpenAI 9-face grid (`10_31_08 AM`) | `qwen-zimage` (`Qwen-Image-2512`) | `0.15625` | `not_detected` | 9/9 | 0.842 | 0.064 | 0.562 | 0.145 | 0.805 | 28.0 |
+
+Head-to-head across all four provider cohorts at each profile's certified operating floor (`qwen21-zimage`: `0.20` OpenAI / `0.35` Google / `0.15` Microsoft / `0.10` Meta; `qwen-zimage`: `0.15625` / `0.35` / `0.15` / `0.10`; `sdxl-zimage`: `0.15` / `0.50` / `0.15`; `chroma-zimage`: `0.20` / `0.50` / `0.125` / `0.17`):
+
+| Cohort & Carrier | Profile & Floor | Oracle | text NED | faces | ID cos | face LPIPS | lapvar | img LPIPS | SSIM | PSNR (dB) |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Google 5-face (`3mc4t9`) | `qwen21-zimage` (`0.35`) | `not_detected` | - | 5/5 | **0.961** | 0.024 | 0.621 | **0.194** | 0.648 | 20.7 |
+| Google 5-face (`3mc4t9`) | `sdxl-zimage` (`0.50`) | `not_detected` | - | 5/5 | **0.961** | **0.021** | 0.630 | 0.201 | **0.659** | **21.3** |
+| Google 5-face (`3mc4t9`) | `qwen-zimage` (`0.35`) | `not_detected` | - | 5/5 | 0.932 | 0.031 | 0.600 | 0.373 | 0.526 | 18.1 |
+| Google 5-face (`3mc4t9`) | `chroma-zimage` (`0.50`) | `not_detected` | - | 5/5 | 0.911 | 0.051 | **0.656** | 0.423 | 0.477 | 18.2 |
+| Google 18-face (`y48j3c`) | `qwen21-zimage` (`0.35`) | `not_detected` | - | 18/18 | **0.874** | **0.043** | 0.515 | **0.175** | **0.684** | **24.9** |
+| Google 18-face (`y48j3c`) | `sdxl-zimage` (`0.50`) | `not_detected` | - | 18/18 | 0.847 | **0.043** | 0.496 | 0.186 | 0.670 | 24.2 |
+| Google 18-face (`y48j3c`) | `qwen-zimage` (`0.35`) | `not_detected` | - | 18/18 | 0.757 | 0.065 | 0.486 | 0.335 | 0.579 | 21.1 |
+| Google 18-face (`y48j3c`) | `chroma-zimage` (`0.50`) | `not_detected` | - | 18/18 | 0.788 | 0.062 | **0.533** | 0.340 | 0.568 | 22.4 |
+| Google CJK sign (`633uuy`) | `qwen21-zimage` (`0.35`) | `not_detected` | **0.038** | 0 | - | - | - | 0.208 | 0.733 | 24.1 |
+| Google CJK sign (`633uuy`) | `sdxl-zimage` (`0.50`) | `not_detected` | **0.038** | 0 | - | - | - | **0.190** | **0.744** | **24.3** |
+| Google CJK sign (`633uuy`) | `qwen-zimage` (`0.35`) | `not_detected` | 0.115 | 0 | - | - | - | 0.359 | 0.564 | 19.3 |
+| Google CJK sign (`633uuy`) | `chroma-zimage` (`0.50`) | `not_detected` | 0.074 | 0 | - | - | - | 0.404 | 0.582 | 20.7 |
+| Google Cyrillic sign (`akdbei`) | `qwen21-zimage` (`0.35`) | `not_detected` | - | 0 | - | - | - | **0.196** | **0.713** | **24.6** |
+| Google Cyrillic sign (`akdbei`) | `sdxl-zimage` (`0.50`) | `not_detected` | - | 0 | - | - | - | 0.210 | 0.710 | 24.0 |
+| Google Cyrillic sign (`akdbei`) | `qwen-zimage` (`0.35`) | `not_detected` | - | 0 | - | - | - | 0.408 | 0.529 | 18.8 |
+| Google Cyrillic sign (`akdbei`) | `chroma-zimage` (`0.50`) | `not_detected` | - | 0 | - | - | - | 0.438 | 0.547 | 20.8 |
+| Microsoft InvisMark (`ms-invismark`) | `qwen21-zimage` (`0.125` / `0.15`) | `detected` / **`not_detected`** | - | 0 | - | - | - | **0.086** / 0.100 | 0.879 / 0.870 | 29.3 / 28.6 |
+| Microsoft InvisMark (`ms-invismark`) | `chroma-zimage` (`0.125`) | `not_detected` | - | 0 | - | - | - | 0.088 | **0.895** | **30.6** |
+| Microsoft InvisMark (`ms-invismark`) | `qwen-zimage` (`0.15`) | `not_detected` | - | 0 | - | - | - | 0.127 | 0.816 | 25.7 |
+| Microsoft InvisMark (`ms-invismark`) | `sdxl-zimage` (`0.15`) | `not_detected` | - | 0 | - | - | - | 0.143 | 0.847 | 28.0 |
+| Microsoft Paint (`ms-paint-invismark`) | `qwen21-zimage` (`0.10` / `0.15`) | **`not_detected`** / **`not_detected`** | - | 0 | - | - | - | **0.003** / **0.003** | **0.996** / **0.996** | 46.9 / 45.7 |
+| Microsoft Paint (`ms-paint-invismark`) | `chroma-zimage` (`0.125`) | `not_detected` | - | 0 | - | - | - | 0.004 | **0.996** | **47.7** |
+| Microsoft Paint (`ms-paint-invismark`) | `qwen-zimage` (`0.15`) | `not_detected` | - | 0 | - | - | - | 0.008 | 0.994 | 35.8 |
+| Microsoft Paint (`ms-paint-invismark`) | `sdxl-zimage` (`0.15`) | `not_detected` | - | 0 | - | - | - | 0.005 | **0.996** | 43.0 |
+| Microsoft Bing (`ms-bing-creator`) | `qwen21-zimage` (`0.08` / `0.15`) | **`not_detected`** / **`not_detected`** | - | 0 | - | - | - | **0.073** / 0.113 | **0.845** / 0.810 | **30.1** / 29.1 |
+| Microsoft Bing (`ms-bing-creator`) | `chroma-zimage` (`0.125`) | `not_detected` | - | 0 | - | - | - | 0.094 | 0.834 | 29.6 |
+| Microsoft Bing (`ms-bing-creator`) | `qwen-zimage` (`0.15`) | `not_detected` | - | 0 | - | - | - | 0.165 | 0.760 | 27.3 |
+| Microsoft Bing (`ms-bing-creator`) | `sdxl-zimage` (`0.15`) | `not_detected` | - | 0 | - | - | - | 0.158 | 0.779 | 28.6 |
+| Microsoft Designer (`ms-designer-1a206423`) | `qwen21-zimage` (`0.125` / `0.15`) | **`not_detected`** / **`not_detected`** | - | 1/1 | 0.910 / **0.915** | **0.024** / 0.026 | **0.610** / 0.600 | **0.202** / 0.224 | **0.582** / 0.549 | **21.6** / 21.2 |
+| Microsoft Designer (`ms-designer-1a206423`) | `chroma-zimage` (`0.125`) | `not_detected` | - | 1/1 | 0.889 | 0.030 | 0.562 | 0.244 | 0.551 | 21.1 |
+| Microsoft Designer (`ms-designer-1a206423`) | `qwen-zimage` (`0.15`) | `not_detected` | - | 1/1 | 0.885 | 0.031 | 0.551 | 0.258 | 0.441 | 19.6 |
+| Microsoft Designer (`ms-designer-1a206423`) | `sdxl-zimage` (`0.15`) | `not_detected` | - | 1/1 | 0.909 | 0.026 | 0.576 | 0.233 | 0.531 | 21.2 |
+| Meta Content Seal (`meta-lighthouse`) | `qwen21-zimage` (`0.06` / `0.10`) | `detected` / `refused` (quota) | - | 0 | - | - | - | 0.067 / **0.107** | 0.920 / **0.884** | 32.0 / **29.6** |
+| Meta Content Seal (`meta-lighthouse`) | `qwen-zimage` (`0.10`) | `not_detected` | - | 0 | - | - | - | 0.172 | 0.785 | 25.7 |
+| Meta Content Seal (`meta-lighthouse`) | `chroma-zimage` (`0.17`) | `not_detected` | - | 0 | - | - | - | 0.248 | 0.781 | 26.3 |
+| Meta Content Seal (`meta-fox`) | `qwen21-zimage` (`0.10`) | `refused` (quota) | - | 0 | - | - | - | **0.101** | **0.876** | **29.0** |
+| Meta Content Seal (`meta-fox`) | `qwen-zimage` (`0.10`) | `not_detected` | - | 0 | - | - | - | 0.166 | 0.777 | 25.7 |
+| Meta Content Seal (`meta-fox`) | `chroma-zimage` (`0.17`) | `not_detected` | - | 0 | - | - | - | 0.214 | 0.770 | 26.0 |
+| Meta Content Seal (`meta-night-city`) | `qwen21-zimage` (`0.10`) | `refused` (quota) | - | 0 | - | - | - | **0.128** | **0.851** | **27.0** |
+| Meta Content Seal (`meta-night-city`) | `qwen-zimage` (`0.10`) | `not_detected` | - | 0 | - | - | - | 0.190 | 0.748 | 23.9 |
+| Meta Content Seal (`meta-night-city`) | `chroma-zimage` (`0.17`) | `not_detected` | - | 0 | - | - | - | 0.268 | 0.721 | 23.7 |
+| Meta Content Seal (`meta-studio-mug`) | `qwen21-zimage` (`0.10`) | **`not_detected`** | - | 0 | - | - | - | **0.016** | **0.990** | **46.0** |
+| Meta Content Seal (`meta-studio-mug`) | `qwen-zimage` (`0.10`) | `not_detected` | - | 0 | - | - | - | 0.024 | 0.984 | 39.3 |
+| Meta Content Seal (`meta-studio-mug`) | `chroma-zimage` (`0.17`) | `not_detected` | - | 0 | - | - | - | 0.022 | 0.987 | 36.6 |
+| Meta Content Seal (`meta-text-poster`) | `qwen21-zimage` (`0.10`) | **`not_detected`** | 0.014 | 0 | - | - | - | **0.006** | **0.990** | **38.4** |
+| Meta Content Seal (`meta-text-poster`) | `qwen-zimage` (`0.10`) | `not_detected` | **0.007** | 0 | - | - | - | 0.011 | 0.984 | 34.0 |
+| Meta Content Seal (`meta-text-poster`) | `chroma-zimage` (`0.17`) | `not_detected` | **0.007** | 0 | - | - | - | 0.008 | 0.988 | 36.8 |
+
+Four findings govern the shipped `qwen21-zimage` configuration:
+
+1. **Unfused 4-step Canny beats fused `Qwen-Image-2.1-Lightning` LoRA in two-stage mode as well as single-stage.** On `y48j3c` at `s=0.35`, unfused `qwen21-zimage` scores higher ArcFace cosine (`0.874` vs `0.851`), lower face LPIPS (`0.043` vs `0.050`), lower whole-image LPIPS (`0.175` vs `0.193`), higher SSIM (`0.684` vs `0.648`), and `+0.9 dB` higher PSNR (`24.9` vs `24.0 dB`), while avoiding the 1.48 GB `Qwen-Image-2.1-Lightning` LoRA download and 128-layer fuse step.
+2. **OpenAI two-stage floor is `0.20` (`QWEN21_ZIMAGE_OPENAI_STRENGTH = 0.20`).** On `10_31_08 AM` (where 9 `Z-Image-Turbo` face boxes cover 46.2% of the frame), the global pass alone cleared at `s=0.10` and `s=0.15625` (`req_e6a46a510ac94a66a2ac425f51e5d678`), and the zero-face OpenAI posters (`02_02_23 PM`, `02_03_55 PM`) cleared at both `0.10` and `0.15625` (`req_7bca9f38380e4a7fa9d15ed3e0c0f970`, `req_996cc315a4864ed9bfe4bb5bd653f9ed`). However, because `Qwen-Image-2.1` + `texture-fix-vae` preserves ~3.9 dB more background signal at `s=0.15625` (`31.7 dB` vs `27.8 dB` for `Qwen-Image-2512`), compositing 9 source-cropped `Z-Image-Turbo` face patches (`face_strength=0.1144`) over the `s=0.15625` background left the composite `detected` (`req_3b58ff787cee4d22ba2934cb7e7e8ae4`). Raising the global OpenAI floor to `0.20` cleared the two-stage composite (`not_detected`, `req_2e599929c32747a5b1a5a6c39623b802`) while still retaining `30.8 dB` PSNR and `0.081` image LPIPS (`+2.8 dB` and `-0.064` LPIPS better than `qwen-zimage` at `0.15625`).
+3. **Google (`0.35`), Microsoft (`0.15`), and Meta (`0.10`) floors match `qwen-zimage` while delivering higher fidelity across all four cohorts.** On Google SynthID, `qwen21-zimage` at `0.35` beats or ties `sdxl-zimage` at `0.50` across all four tracked carriers (`ID cos = 0.874` vs `0.847` and `PSNR = 24.9` vs `24.2 dB` on 18-face `y48j3c`; `ID cos = 0.961` tied and `img LPIPS = 0.194` vs `0.201` on 5-face `3mc4t9`; `text NED = 0.038` tied on CJK `633uuy`; `img LPIPS = 0.196` vs `0.210` and `PSNR = 24.6` vs `24.0 dB` on Cyrillic `akdbei`). On Microsoft InvisMark (`microsoft-web` at `ai.azure.com/nextgen/validate`), `qwen21-zimage` clears `ms-designer-1a206423` at `0.06`, `ms-bing-creator` at `0.08`, `ms-paint-invismark` at `0.10`, and `ms-invismark` at `0.15` (4/4 `not_detected` at `0.15`), beating `chroma-zimage-0.125` on the face-bearing Designer carrier (`ID cos = 0.915` vs `0.889`, `img LPIPS = 0.224` vs `0.244`) while trailing `chroma-zimage-0.125` slightly on the zero-face Paint/Bing/InvisMark carriers (`+0.5` to `+2.0 dB` PSNR in Chroma's favor due to its lower `0.125` floor). On Meta Content Seal, `meta-lighthouse` remained `detected` at `0.06`, while at `0.10` `qwen21-zimage` beats `qwen-zimage-0.10` and `chroma-zimage-0.17` across all five carriers by `+3.1` to `+6.7 dB` PSNR (`27.0-46.0 dB` vs `23.9-39.3 dB`).
+4. **`madebyollin/texture-fix-vae-for-qwen-image-2.1` requires `bfloat16` storage (`_build_qwen21_vram_config`), never `float8_e4m3fn` disk/CPU offload.** To prevent fp16 activation overflow, `texture-fix-vae` rescales its decoder weights by `1 / 512` (`2^-9`) and encoder weights by `1 / 8`. Passing `offload_dtype=torch.float8_e4m3fn` causes DiffSynth's `DiskMap` to cast every VAE weight tensor to unscaled `float8_e4m3fn` at load time, underflowing the `1 / 512`-scaled decoder weights below the minimum `e4m3fn` subnormal (`2^-9`) to zero and decoding a flat gray frame (`PSNR = 10.2 dB`). Additionally, DiffSynth 2.1.9's `VRAM_MANAGEMENT_MODULE_MAPS["diffsynth.models.qwen_image_21_controlnet.QwenImage21ControlNet"]` omits `QwenImage21ZeroCenterRMSNorm`. `_build_qwen21_vram_config` keeps the 7B `Qwen-Image-2.1` stack in `torch.bfloat16` (`cuda` when resident, `cpu` -> `cuda` when `--cpu-offload` is enabled) and registers `QwenImage21ZeroCenterRMSNorm` in `VRAM_MANAGEMENT_MODULE_MAPS`.
+
+### 4. Licensing and integration decision
+
+| Component | Repository | License | Commercial use | Role in `remove-ai-watermarks` |
+| --- | --- | --- | --- | --- |
+| Default Qwen global stage | `Qwen/Qwen-Image-2512` | **Apache-2.0** | Permitted | Default `qwen-zimage` and `auto` fallback |
+| Shared face stage | `Tongyi-MAI/Z-Image-Turbo` | **Apache-2.0** | Permitted | Shared across all two-stage profiles |
+| Qwen 2.1 ControlNet Union | `alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union` | **Apache-2.0** | Permitted | Used by opt-in `qwen21-zimage` |
+| Qwen 2.1 Texture-Fix VAE | `madebyollin/texture-fix-vae-for-qwen-image-2.1` | **Apache-2.0** | Permitted | Used by opt-in `qwen21-zimage` |
+| Qwen 2.1 base transformer | `Qwen/Qwen-Image-2.1` | **Qwen Research License** | **Non-commercial research & personal use only** | Opt-in `--pipeline qwen21-zimage` only (never selected by `auto`) |
+| Qwen 2.1 Lightning LoRA | `lightx2v/Qwen-Image-2.1-Lightning` | **Qwen Research License** | **Non-commercial research & personal use only** | Not used (unfused 4-step Canny outperforms it) |
+
+Because `Qwen/Qwen-Image-2.1` is governed by the non-commercial Qwen Research
+License, `qwen-zimage` (`Qwen/Qwen-Image-2512`, Apache-2.0) remains the default
+profile and `--pipeline auto` routes only across the Apache-2.0 / commercial-safe
+profiles (`sdxl-zimage`, `chroma-zimage`, and `qwen-zimage`). `qwen21-zimage`
+(`Qwen21ZImagePipeline` in `qwen_zimage_pipeline.py`) is shipped as an explicit
+opt-in profile (`--pipeline qwen21-zimage`) with non-commercial / personal-use
+notices in the CLI help, Python docstrings, documentation, and Agent Skill.

@@ -1,11 +1,12 @@
 """Project-owned configuration for invisible-watermark regeneration profiles.
 
-Three profiles remain, and all are CUDA-only: ``qwen-zimage`` (the default),
-``sdxl-zimage`` and ``chroma-zimage``, plus the per-vendor ``auto`` selector. The
-older ``controlnet``, ``sdxl``, ``qwen`` and ``default`` profiles were removed rather
-than kept as a CPU path, because none of them matched the two-stage recipe's face
-preservation and keeping them implied a quality this library no longer offers.
-Removing invisible watermarks therefore needs a CUDA device; the visible-mark
+Four profiles are available, and all are CUDA-only: ``qwen-zimage`` (the default),
+``qwen21-zimage`` (non-commercial research and personal use under the Qwen Research
+License), ``sdxl-zimage`` and ``chroma-zimage``, plus the per-vendor ``auto``
+selector. The older ``controlnet``, ``sdxl``, ``qwen`` and ``default`` profiles were
+removed rather than kept as a CPU path, because none of them matched the two-stage
+recipe's face preservation and keeping them implied a quality this library no longer
+offers. Removing invisible watermarks therefore needs a CUDA device; the visible-mark
 registry and every identify path still run anywhere.
 """
 
@@ -24,11 +25,18 @@ SDXL_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
 CONTROLNET_CANNY_MODEL = "xinsir/controlnet-canny-sdxl-1.0"
 
 QWEN_ZIMAGE_PROFILE = "qwen-zimage"
+QWEN21_ZIMAGE_PROFILE = "qwen21-zimage"
 SDXL_ZIMAGE_PROFILE = "sdxl-zimage"
 CHROMA_ZIMAGE_PROFILE = "chroma-zimage"
 AUTO_PROFILE = "auto"
 DEFAULT_PROFILE = QWEN_ZIMAGE_PROFILE
-PROFILE_CHOICES = (QWEN_ZIMAGE_PROFILE, SDXL_ZIMAGE_PROFILE, CHROMA_ZIMAGE_PROFILE, AUTO_PROFILE)
+PROFILE_CHOICES = (
+    QWEN_ZIMAGE_PROFILE,
+    QWEN21_ZIMAGE_PROFILE,
+    SDXL_ZIMAGE_PROFILE,
+    CHROMA_ZIMAGE_PROFILE,
+    AUTO_PROFILE,
+)
 
 # The modules a real removal run needs, and the extra that installs them. Both live
 # here, in the only profile module that imports nothing heavy, because the CLI's
@@ -54,6 +62,7 @@ VISIBLE_EXTRA = "'remove-ai-watermarks[visible]'"
 # "the user did not choose" stays a value rather than an inference from Click state.
 PROFILE_ADAPTIVE_POLISH = {
     QWEN_ZIMAGE_PROFILE: False,
+    QWEN21_ZIMAGE_PROFILE: False,
     SDXL_ZIMAGE_PROFILE: True,
     CHROMA_ZIMAGE_PROFILE: False,
     # This fallback applies only before a vendor is known. The engine resolves
@@ -63,13 +72,13 @@ PROFILE_ADAPTIVE_POLISH = {
 
 # Which profiles let ``--cpu-offload`` reach their GLOBAL stack. The face stage
 # honours the flag everywhere, because residency lives on the shared base, but the
-# global stack is each profile's own: qwen-zimage streams it through
+# global stack is each profile's own: qwen-zimage and qwen21-zimage stream it through
 # ``_qwen_vram_config`` and sdxl-zimage through Diffusers sequential offload.
 # chroma-zimage loads its stack with a plain ``.to(device)``, so on a card below the
 # face-stage residency floor the flag has nothing left to change there and the run
 # behaves as if it were absent. Data rather than a subclass attribute, because the
 # caller that must warn cannot import a profile module without pulling in Diffusers.
-GLOBAL_OFFLOAD_PROFILES = frozenset({QWEN_ZIMAGE_PROFILE, SDXL_ZIMAGE_PROFILE})
+GLOBAL_OFFLOAD_PROFILES = frozenset({QWEN_ZIMAGE_PROFILE, QWEN21_ZIMAGE_PROFILE, SDXL_ZIMAGE_PROFILE})
 
 SDXL_LIGHTNING_MODEL_ID = "ByteDance/SDXL-Lightning"
 SDXL_LIGHTNING_PATTERN = "sdxl_lightning_4step_lora.safetensors"
@@ -139,6 +148,20 @@ _QWEN_ZIMAGE_FLAT_STRENGTH_BY_VENDOR: dict[str, float] = {
     "meta": QWEN_ZIMAGE_META_STRENGTH,
 }
 
+# qwen21-zimage's 64-channel texture-fix-vae global pass preserves ~3.9 dB more
+# background detail at s=0.15625 than qwen-zimage's 16-channel 8x VAE. On the
+# 9-face OpenAI portrait (10_31_08 AM, where Z-Image face crops cover 46.2% of
+# the frame), the global pass alone cleared at s=0.10, but the two-stage output
+# with 9 Z-Image face patches remained detected at s=0.15625
+# (req_3b58ff787cee4d22ba2934cb7e7e8ae4) and cleared at s=0.20
+# (req_2e599929c32747a5b1a5a6c39623b802).
+QWEN21_ZIMAGE_OPENAI_STRENGTH = 0.20
+
+_QWEN21_ZIMAGE_FLAT_STRENGTH_BY_VENDOR: dict[str, float] = {
+    **_QWEN_ZIMAGE_FLAT_STRENGTH_BY_VENDOR,
+    "openai": QWEN21_ZIMAGE_OPENAI_STRENGTH,
+}
+
 
 # sdxl-zimage always picks its strength from the vendor. qwen-zimage instead uses
 # the vendor only for measured cohorts and image area for unknown content. An
@@ -197,6 +220,7 @@ _CHROMA_ZIMAGE_STRENGTH_BY_VENDOR: dict[str, float] = {
 }
 _ALIASES = {
     "qwen_zimage": QWEN_ZIMAGE_PROFILE,
+    "qwen21_zimage": QWEN21_ZIMAGE_PROFILE,
     "sdxl_zimage": SDXL_ZIMAGE_PROFILE,
     "chroma_zimage": CHROMA_ZIMAGE_PROFILE,
     "auto": AUTO_PROFILE,
@@ -207,6 +231,8 @@ _ALIASES = {
 # chroma-zimage has the lower measured Microsoft floor. SDXL wins Google on
 # paired quality at the independently clean operating points. Qwen wins OpenAI
 # and Meta; unknown stays on Qwen, the shipped conservative fallback.
+# qwen21-zimage is opt-in only and never selected by ``auto`` because
+# Qwen/Qwen-Image-2.1 is licensed under the non-commercial Qwen Research License.
 _ENGINE_BY_VENDOR: dict[str, str] = {
     "google": SDXL_ZIMAGE_PROFILE,
     "microsoft": CHROMA_ZIMAGE_PROFILE,
@@ -258,10 +284,11 @@ def global_offload_supported(pipeline: str) -> bool:
 def strength_default_help() -> str:
     """Describe the live default policy without duplicating its values."""
     return (
-        "profile-adaptive (qwen-zimage uses resolution-adaptive denoise, with a "
+        "profile-adaptive (qwen-zimage uses resolution-adaptive denoise, with "
         f"flat OpenAI {QWEN_ZIMAGE_OPENAI_STRENGTH} / Google {QWEN_ZIMAGE_GOOGLE_STRENGTH} / "
         f"Microsoft InvisMark {QWEN_ZIMAGE_MICROSOFT_STRENGTH} / Meta Content Seal "
-        f"{QWEN_ZIMAGE_META_STRENGTH} floors; sdxl-zimage "
+        f"{QWEN_ZIMAGE_META_STRENGTH} floors; qwen21-zimage uses the same curve and floors "
+        f"with OpenAI {QWEN21_ZIMAGE_OPENAI_STRENGTH}; sdxl-zimage "
         f"uses OpenAI {SDXL_ZIMAGE_OPENAI_STRENGTH} / Google {SDXL_ZIMAGE_GEMINI_STRENGTH} / "
         f"unknown {SDXL_ZIMAGE_UNKNOWN_STRENGTH}; chroma-zimage uses OpenAI "
         f"{CHROMA_ZIMAGE_OPENAI_STRENGTH} / Microsoft {CHROMA_ZIMAGE_MICROSOFT_STRENGTH} / "
@@ -278,14 +305,15 @@ def resolve_strength(
 ) -> float:
     """Resolve a user override or the calibrated policy for a profile and vendor.
 
-    Total by design. qwen-zimage picks its strength from image area rather than
-    from the vendor, so it needs ``size``; returning ``None`` for it instead would push that
-    branch onto every caller and move one of the two strength policies outside this
-    module. ``size`` is required for qwen-zimage without an explicit strength.
-    Measured vendor exceptions bypass the area curve: OpenAI and Microsoft use one
-    additional observed cross-source spread over their worst clean boundaries, while
-    Google uses a separately repeated cross-source candidate. See the constants'
-    comments for the exact derivations.
+    Total by design. qwen-zimage and qwen21-zimage pick their strength from image
+    area rather than from the vendor for unknown content, so they need ``size``;
+    returning ``None`` instead would push that branch onto every caller and move
+    one of the two strength policies outside this module. ``size`` is required for
+    qwen-zimage and qwen21-zimage without an explicit strength. Measured vendor
+    exceptions bypass the area curve: OpenAI and Microsoft use one additional
+    observed cross-source spread over their worst clean boundaries, while Google
+    uses a separately repeated cross-source candidate. See the constants' comments
+    for the exact derivations.
     """
     if strength is not None:
         return strength
@@ -296,8 +324,13 @@ def resolve_strength(
         vendor_key = (vendor or "").casefold()
         return _CHROMA_ZIMAGE_STRENGTH_BY_VENDOR.get(vendor_key, CHROMA_ZIMAGE_UNKNOWN_STRENGTH)
     if size is None:
-        raise ValueError("qwen-zimage resolves strength from image area, so size is required")
-    vendor_strength = _QWEN_ZIMAGE_FLAT_STRENGTH_BY_VENDOR.get((vendor or "").casefold())
+        raise ValueError(f"{normalized or 'qwen-zimage'} resolves strength from image area, so size is required")
+    vendor_map = (
+        _QWEN21_ZIMAGE_FLAT_STRENGTH_BY_VENDOR
+        if normalized == QWEN21_ZIMAGE_PROFILE
+        else _QWEN_ZIMAGE_FLAT_STRENGTH_BY_VENDOR
+    )
+    vendor_strength = vendor_map.get((vendor or "").casefold())
     if vendor_strength is not None:
         return vendor_strength
     from remove_ai_watermarks._internal.two_stage_pipeline import resolution_adaptive_denoise

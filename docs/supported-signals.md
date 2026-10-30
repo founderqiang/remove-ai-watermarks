@@ -182,7 +182,10 @@ Microsoft Paint payload.
 
 Current diffusion pipeline values, all CUDA-only:
 
-- `qwen-zimage`, the default;
+- `qwen-zimage`, the default (Apache-2.0);
+- `qwen21-zimage`, opt-in Qwen-Image-2.1 global stage plus the same Z-Image face
+  stage (`Qwen/Qwen-Image-2.1` is under the Qwen Research License: non-commercial
+  research, evaluation, and personal use only);
 - `sdxl-zimage`, the same recipe and the same face stage on an SDXL global pass;
 - `chroma-zimage`, the same face stage on a Chroma1 global pass;
 - `auto`, sdxl-zimage for Google provenance, chroma-zimage for Microsoft,

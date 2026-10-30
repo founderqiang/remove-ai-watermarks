@@ -207,13 +207,13 @@ The complete field set, with the shipped defaults:
 | Field | Default | Effect |
 | --- | --- | --- |
 | `strength` | `None` | Denoising strength. `None` resolves per profile and vendor cohort. |
-| `pipeline` | `"qwen-zimage"` | Profile: `qwen-zimage`, `sdxl-zimage`, `chroma-zimage`, or `auto`. |
+| `pipeline` | `"qwen-zimage"` | Profile: `qwen-zimage`, `qwen21-zimage` (Qwen Research License: non-commercial/personal use only), `sdxl-zimage`, `chroma-zimage`, or `auto`. |
 | `vendor` | `None` | Strength cohort, and an assertion that the watermark is present. |
 | `seed` | `None` | `None` uses the certified seed 0. Removal near the floor is seed-dependent. |
 | `hf_token` | `None` | Hugging Face token for the model download; the environment and a local `.env` are read when unset. |
 | `humanize` | `0.0` | Analog film grain. 0 is off; 2.0-6.0 is the useful band. |
 | `unsharp` | `0.0` | Unsharp-mask sharpening. 0 is off. |
-| `adaptive_polish` | `None` | `None` lets the profile decide (off for `qwen-zimage`, on for `sdxl-zimage`); `True`/`False` override it. |
+| `adaptive_polish` | `None` | `None` lets the profile decide (off for `qwen-zimage` and `qwen21-zimage`, on for `sdxl-zimage`); `True`/`False` override it. |
 | `max_resolution` | `0` | Cap the long side before diffusion. 0 keeps native geometry and the most detail. |
 | `controlnet_conditioning_scale` | `1.0` | Canny ControlNet conditioning on the global stage. Higher stays closer to the original structure and text. |
 | `cpu_offload` | `False` | Stream model components between CPU and GPU. Lower CUDA memory, slower. |
@@ -753,7 +753,7 @@ to 8-bit SDR.
 
 ## Remove invisible watermarks
 
-Install `remove-ai-watermarks[qwen-zimage]`. All three profiles need it, and all
+Install `remove-ai-watermarks[qwen-zimage]`. All four concrete profiles need it, and all
 need an NVIDIA GPU.
 
 ```python
@@ -762,7 +762,7 @@ from pathlib import Path
 from remove_ai_watermarks.invisible_engine import InvisibleEngine
 
 engine = InvisibleEngine(
-    pipeline="qwen-zimage",  # the default; also "sdxl-zimage", "chroma-zimage", or "auto"
+    pipeline="qwen-zimage",  # the default; also "qwen21-zimage" (non-commercial), "sdxl-zimage", "chroma-zimage", or "auto"
     device=None,
     cpu_offload=False,
 )

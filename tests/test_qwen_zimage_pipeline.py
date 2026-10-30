@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -1441,3 +1442,197 @@ def test_auto_profile_is_resolved_fresh_for_each_image(tmp_path, monkeypatch):
     remover.remove_watermark(source, tmp_path / "openai.png", vendor="openai")
     assert remover.model_profile == "qwen-zimage"
     assert runtimes[-1].run.call_args.kwargs["strength"] == pytest.approx(QWEN_ZIMAGE_OPENAI_STRENGTH)
+
+
+def test_qwen21_pipeline_is_sibling_of_qwen_pipeline():
+    """Qwen21ZImagePipeline inherits from TwoStageZImagePipeline, never QwenZImagePipeline."""
+    from remove_ai_watermarks._internal.qwen_zimage_pipeline import (
+        Qwen21ZImagePipeline,
+        QwenZImagePipeline,
+    )
+    from remove_ai_watermarks._internal.two_stage_pipeline import TwoStageZImagePipeline
+
+    assert issubclass(Qwen21ZImagePipeline, TwoStageZImagePipeline)
+    assert not issubclass(Qwen21ZImagePipeline, QwenZImagePipeline)
+    assert Qwen21ZImagePipeline.profile_name == "qwen21-zimage"
+
+
+def test_cli_exposes_qwen21_zimage_and_non_commercial_notice():
+    """The CLI lists qwen21-zimage and marks its non-commercial Qwen Research License."""
+    from remove_ai_watermarks import cli
+
+    assert "qwen21-zimage" in cli._PIPELINE_CHOICES
+    assert "NON-COMMERCIAL" in cli._PIPELINE_HELP
+    assert "Qwen Research License" in cli._PIPELINE_HELP
+
+
+def test_remover_dispatches_qwen21_zimage_to_qwen21_pipeline(monkeypatch):
+    """WatermarkRemover builds Qwen21ZImagePipeline when pipeline is qwen21-zimage."""
+    from remove_ai_watermarks._internal import qwen_zimage_pipeline
+    from remove_ai_watermarks._internal.watermark_remover import WatermarkRemover
+
+    captured: dict[str, Any] = {}
+
+    class _Recorder:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(qwen_zimage_pipeline, "Qwen21ZImagePipeline", _Recorder)
+    remover = WatermarkRemover.__new__(WatermarkRemover)
+    remover.configured_profile = "qwen21-zimage"
+    remover.model_profile = "qwen21-zimage"
+    remover.device = "cuda"
+    remover.torch_dtype = "bf16"
+    remover.hf_token = "tok"
+    remover._progress_callback = None
+    remover.controlnet_conditioning_scale = 0.9
+    remover.cpu_offload = True
+    remover._qwen_zimage_pipeline = None
+
+    remover._load_qwen_zimage_pipeline()
+
+    assert captured["device"] == "cuda"
+    assert captured["torch_dtype"] == "bf16"
+    assert captured["hf_token"] == "tok"
+    assert captured["controlnet_conditioning_scale"] == pytest.approx(0.9)
+    assert captured["keep_face_models_on_device"] is False
+    assert captured["keep_global_models_on_device"] is False
+
+
+def test_qwen21_global_pass_and_vae_roundtrip_crop_padded_frame_back_to_source_size(monkeypatch):
+    """Qwen21ZImagePipeline pads to 32 (global) and 16 (VAE round-trip) and crops back."""
+    torch = pytest.importorskip("torch")
+    from remove_ai_watermarks._internal.qwen_zimage_pipeline import GLOBAL_STEPS, Qwen21ZImagePipeline
+
+    pipeline = Qwen21ZImagePipeline(device="cpu", torch_dtype=torch.float32)
+
+    class _FakeScheduler:
+        def __init__(self) -> None:
+            self.timesteps = [torch.tensor(500.0), torch.tensor(250.0)]
+            self.set_kwargs: dict[str, Any] = {}
+            self.steps_called = 0
+
+        def set_timesteps(self, **kwargs: Any) -> None:
+            self.set_kwargs = kwargs
+
+        def add_noise(self, latents: Any, noise: Any, _t0: Any) -> Any:
+            return latents + noise
+
+        def step(self, noise_pred: Any, _t: Any, latents: Any) -> Any:
+            self.steps_called += 1
+            return latents - noise_pred
+
+    class _FakeVae:
+        def __init__(self) -> None:
+            self.encoded_shapes: list[tuple[int, int]] = []
+
+        def encode(self, tensor: Any) -> Any:
+            self.encoded_shapes.append((int(tensor.shape[-1]), int(tensor.shape[-2])))
+            return torch.zeros((1, 4, 4, 4), dtype=torch.float32)
+
+        def decode(self, latents: Any) -> Any:
+            return latents
+
+    class _FakePipe:
+        def __init__(self) -> None:
+            self.vae = _FakeVae()
+            self.dit = object()
+            self.controlnet = object()
+            self.text_encoder = object()
+            self.scheduler = _FakeScheduler()
+            self.loaded_devices: list[list[str]] = []
+            self.last_image_size: tuple[int, int] = (0, 0)
+
+        def load_models_to_device(self, names: list[str]) -> None:
+            self.loaded_devices.append(list(names))
+
+        def preprocess_image(self, img: Image.Image) -> Any:
+            self.last_image_size = img.size
+            return torch.zeros((1, 4, img.height, img.width), dtype=torch.float32)
+
+        def generate_noise(self, shape: Any, **_kwargs: Any) -> Any:
+            return torch.ones(shape, dtype=torch.float32)
+
+        def vae_output_to_image(self, _decoded: Any) -> Image.Image:
+            return Image.new("RGBA", self.last_image_size, (10, 20, 30, 255))
+
+    fake_pipe = _FakePipe()
+    prompt_unit = MagicMock()
+    prompt_unit.process.return_value = {
+        "prompt_embeds": "pe",
+        "prompt_embeds_mask": "pem",
+        "edit_image_pad_mask": "eipm",
+    }
+    control_unit = MagicMock()
+    control_unit.process.return_value = {
+        "control_context": "ctx",
+        "control_scale": 1.0,
+    }
+    model_calls: list[dict[str, Any]] = []
+
+    def _fake_model_fn(**kwargs: Any) -> Any:
+        model_calls.append(kwargs)
+        return torch.zeros((1, 4, 4, 4), dtype=torch.float32)
+
+    monkeypatch.setattr(
+        pipeline,
+        "_load_global",
+        lambda: (fake_pipe, lambda **kw: kw, prompt_unit, control_unit, _fake_model_fn),
+    )
+
+    source = Image.new("RGB", (50, 38), (100, 120, 140))
+    out_global = pipeline._run_global(source, 0.20, seed=7)
+    assert out_global.size == (50, 38)
+    assert out_global.mode == "RGB"
+    # 50x38 pads to 64x64 on a 32px grid.
+    assert fake_pipe.vae.encoded_shapes[0] == (64, 64)
+    assert fake_pipe.scheduler.set_kwargs["num_inference_steps"] == GLOBAL_STEPS
+    assert fake_pipe.scheduler.set_kwargs["denoising_strength"] == pytest.approx(0.20)
+    assert len(model_calls) == 2
+    assert model_calls[0]["prompt_embeds"] == "pe"
+    assert model_calls[0]["control_context"] == "ctx"
+
+    out_rt = pipeline._vae_roundtrip(source)
+    assert out_rt.size == (50, 38)
+    assert out_rt.mode == "RGB"
+    # 50x38 pads to 64x48 on a 16px grid.
+    assert fake_pipe.vae.encoded_shapes[1] == (64, 48)
+
+
+@pytest.mark.parametrize(
+    ("keep_resident", "expected_offload_device"),
+    [
+        (True, "cuda"),
+        (False, "cpu"),
+    ],
+)
+def test_qwen21_vram_config_preserves_bfloat16_to_prevent_texture_fix_vae_underflow(
+    keep_resident: bool,
+    expected_offload_device: str,
+):
+    """Qwen-Image-2.1 must stay in bfloat16 rather than unscaled float8_e4m3fn.
+
+    ``madebyollin/texture-fix-vae-for-qwen-image-2.1`` rescales its decoder weights by
+    ``1 / 512`` (``2^-9``) to prevent fp16 activation overflow. DiffSynth's ``DiskMap``
+    casts every parameter to ``offload_dtype`` on load; if ``offload_dtype`` is
+    ``torch.float8_e4m3fn``, those ``1 / 512``-scaled decoder weights underflow below
+    the minimum ``e4m3fn`` subnormal and decode every image to a flat mid-gray plane.
+    """
+    torch = pytest.importorskip("torch")
+    from remove_ai_watermarks._internal.qwen_zimage_pipeline import Qwen21ZImagePipeline
+
+    pipeline = Qwen21ZImagePipeline(
+        device="cuda",
+        torch_dtype=torch.bfloat16,
+        keep_global_models_on_device=keep_resident,
+    )
+    config = pipeline._qwen_vram_config()
+
+    assert config["offload_dtype"] == torch.bfloat16
+    assert config["onload_dtype"] == torch.bfloat16
+    assert config["preparing_dtype"] == torch.bfloat16
+    assert config["computation_dtype"] == torch.bfloat16
+    assert config["offload_device"] == expected_offload_device
+    assert config["onload_device"] == expected_offload_device
+    assert config["preparing_device"] == "cuda"
+    assert config["computation_device"] == "cuda"
