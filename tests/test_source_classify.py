@@ -214,6 +214,10 @@ def test_positive_part_subunit_pooling_and_threshold_mutation(tmp_path: Path) ->
     assert res_hi.label == "unknown"
     assert res_hi.reason == "abstained"
 
+    # Confidence must increase monotonically with AI evidence across abstained and classified regimes:
+    # res_neg (excess = -2.0) < res_hi (excess = -0.6) < 0.5 <= res_pos (excess = +1.4)
+    assert 0.0 < res_neg.confidence < res_hi.confidence < 0.5 <= res_pos.confidence < 1.0
+
 
 def test_canonical_provider_routing_and_version_head(tmp_path: Path) -> None:
     x_956 = np.zeros(source_classify.FEATURE_DIM, dtype=np.float64)
@@ -228,6 +232,44 @@ def test_canonical_provider_routing_and_version_head(tmp_path: Path) -> None:
     assert res.label == "stable_diffusion"
     assert res.version_subfamily == "stable_diffusion:v1"
     assert set(res.pooled_scores) == set(source_classify.ALL_PROVIDER_CLASSES)
+
+
+def test_stage15_hinge_meta_router_disambiguation(tmp_path: Path) -> None:
+    x_956 = np.zeros(source_classify.FEATURE_DIM, dtype=np.float64)
+    w_base = _write_synthetic_v3_npz(
+        tmp_path / "base_meta.npz",
+        target_class="openai",
+        target_global_bias=2.0,
+        target_sub_bias=2.5,
+        target_sub_alpha=0.0,
+        router_threshold=1.0,
+    )
+    # Without router_meta_w, openai wins with pooled_z = 2.0
+    res_base = source_classify.classify_source_features(x_956, weights_path=w_base)
+    assert res_base.label == "openai"
+
+    # Add router_meta_tau and router_meta_w where openai:v_sub_a hinge (index 1, value 2.5 - 0.5 = 2.0)
+    # suppresses openai (-1.0 * 2.0 = -2.0) and boosts firefly (+2.5 * 2.0 = +5.0 -> +2.0).
+    with np.load(w_base, allow_pickle=False) as z:
+        payload = {k: z[k] for k in z.files}
+    n_units = len(payload["unit_descriptor_classes"])
+    n_cls = len(source_classify.ALL_PROVIDER_CLASSES)
+    tau = np.zeros(n_units, dtype=np.float64)
+    tau[1] = 0.5  # openai:v_sub_a has raw score 2.5 -> h_u[1] = 2.0
+    w_meta = np.zeros((n_units + n_cls, n_cls), dtype=np.float64)
+    openai_idx = source_classify.ALL_PROVIDER_CLASSES.index("openai")
+    firefly_idx = source_classify.ALL_PROVIDER_CLASSES.index("firefly")
+    w_meta[1, openai_idx] = -1.0  # delta = -2.0 -> pooled_z["openai"] = 0.0
+    w_meta[1, firefly_idx] = 2.5  # delta = +5.0 -> pooled_z["firefly"] = -3.0 + 5.0 = +2.0
+    payload["router_meta_tau"] = tau
+    payload["router_meta_w"] = w_meta
+    w_routed = tmp_path / "routed_meta.npz"
+    np.savez(w_routed, **payload)
+
+    res_routed = source_classify.classify_source_features(x_956, weights_path=w_routed)
+    assert res_routed.label == "firefly"
+    assert res_routed.pooled_scores["openai"] == pytest.approx(0.0)
+    assert res_routed.pooled_scores["firefly"] == pytest.approx(2.0)
 
 
 def test_metadata_does_not_change_pixel_decision(tmp_path: Path) -> None:

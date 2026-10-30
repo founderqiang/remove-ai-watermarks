@@ -77,7 +77,7 @@ WEIGHTS_ENV = "RAIW_SOURCE_CLASSIFY_WEIGHTS"
 WEIGHTS_REPO = "wiltodelta/raiw-source-classify"
 WEIGHTS_REVISION = "29b1d062b62b92d792cb6e581dbe5ad75adede5a"
 MODEL_FILE = "multi-provider-source-v3.npz"
-MODEL_SHA256 = "f7f5da50edccc264f3a326208abc4fc6f36b7e085f0fc0507dff4b4f260d21b3"
+MODEL_SHA256 = "b23ef046da3cb85b65e5985a276cbf2912022d79a1837f5d0967631f7c04598e"
 MODEL_SCHEMA = "multi-provider-source-v3"
 SOURCE_CLASSIFY_EXTRA = "'remove-ai-watermarks[source-classify]'"
 
@@ -206,6 +206,8 @@ class _SourceModel:
     specialists: dict[str, _ProviderSpecialist]
     unit_descriptors: tuple[tuple[str, str], ...]
     version_heads: dict[str, _Stage2VersionHead]
+    router_meta_tau: FloatArray | None = None
+    router_meta_w: FloatArray | None = None
 
 
 def is_available() -> bool:
@@ -655,6 +657,25 @@ def _load_model_from_path(resolved: Path) -> _SourceModel:
                 values=values,
             )
 
+        router_meta_tau: FloatArray | None = None
+        router_meta_w: FloatArray | None = None
+        if "router_meta_tau" in data or "router_meta_w" in data:
+            if "router_meta_tau" not in data or "router_meta_w" not in data:
+                raise ValueError("Both router_meta_tau and router_meta_w must be present together")
+            n_units = len(unit_descriptors)
+            n_cls = len(ALL_PROVIDER_CLASSES)
+            tau_arr = np.asarray(data["router_meta_tau"], dtype=np.float64)
+            w_arr = np.asarray(data["router_meta_w"], dtype=np.float64)
+            if (
+                tau_arr.shape != (n_units,)
+                or w_arr.shape != (n_units + n_cls, n_cls)
+                or not np.all(np.isfinite(tau_arr))
+                or not np.all(np.isfinite(w_arr))
+            ):
+                raise ValueError("Invalid router_meta_tau or router_meta_w shape or values")
+            router_meta_tau = tau_arr
+            router_meta_w = w_arr
+
     return _SourceModel(
         mean=mean,
         scale=scale,
@@ -663,6 +684,8 @@ def _load_model_from_path(resolved: Path) -> _SourceModel:
         specialists=specialists,
         unit_descriptors=unit_descriptors,
         version_heads=version_heads,
+        router_meta_tau=router_meta_tau,
+        router_meta_w=router_meta_w,
     )
 
 
@@ -727,6 +750,21 @@ def classify_source_features(
         pooled_z[cls_name] = max_z - spec.pool_recenter
         best_fine_sub_by_cls[cls_name] = best_sub
 
+    u_vec: FloatArray | None = None
+    if model.router_meta_tau is not None and model.router_meta_w is not None:
+        u_vec = np.asarray(
+            [raw_unit_map[desc] for desc in model.unit_descriptors],
+            dtype=np.float64,
+        )
+        h_u = np.maximum(0.0, u_vec - model.router_meta_tau)
+        h_z = np.asarray(
+            [max(0.0, pooled_z[c]) for c in ALL_PROVIDER_CLASSES],
+            dtype=np.float64,
+        )
+        meta_delta = np.concatenate([h_u, h_z]) @ model.router_meta_w
+        for idx_c, cls_name in enumerate(ALL_PROVIDER_CLASSES):
+            pooled_z[cls_name] += float(meta_delta[idx_c])
+
     margins: dict[str, float] = {}
     excess: dict[str, float] = {}
     for cls_name in ALL_PROVIDER_CLASSES:
@@ -737,23 +775,23 @@ def classify_source_features(
         excess[cls_name] = m_val - thresholds[cls_name]
 
     best_cls = max(ALL_PROVIDER_CLASSES, key=lambda c: excess[c])
+    confidence = _sigmoid_scalar(excess[best_cls])
     if excess[best_cls] >= 0.0:
         label: SourceLabel = best_cls
         reason: SourceReason = "classified"
-        confidence = _sigmoid_scalar(margins[best_cls])
         fine_subfamily = best_fine_sub_by_cls.get(best_cls)
         version_subfamily = fine_subfamily
         if best_cls in model.version_heads:
-            u_vec = np.asarray(
-                [raw_unit_map[desc] for desc in model.unit_descriptors],
-                dtype=np.float64,
-            )
+            if u_vec is None:
+                u_vec = np.asarray(
+                    [raw_unit_map[desc] for desc in model.unit_descriptors],
+                    dtype=np.float64,
+                )
             x_stacked = np.concatenate([x_1d, u_vec])
             version_subfamily = _eval_stage2_version_head(model.version_heads[best_cls], x_stacked)
     else:
         label = "unknown"
         reason = "abstained"
-        confidence = 1.0 - _sigmoid_scalar(max(pooled_z.values()))
         fine_subfamily = None
         version_subfamily = None
 

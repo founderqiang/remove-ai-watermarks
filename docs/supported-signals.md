@@ -145,7 +145,7 @@ re-linkability warning, never selects pixel regeneration, and does not suppress
 independent SynthID evidence.
 
 The opt-in `classify_source` API (and CLI `classify-source`) is not an
-`identify` signal. It can suggest one of 11 AI source/export pipelines and its
+`identify` signal. It can suggest one of 10 AI source/export pipelines and its
 model-version subfamily after metadata removal, but it neither detects nor
 decodes a watermark and never changes the provenance verdict.
 

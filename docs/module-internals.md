@@ -1447,9 +1447,11 @@ units and their subfamily sub-units in pure NumPy from a pickle-free `.npz`
 (`multi-provider-source-v3.npz`, `allow_pickle=False`, verified by SHA-256 from
 `wiltodelta/raiw-source-classify` or overridden via
 `RAIW_SOURCE_CLASSIFY_WEIGHTS`). It applies positive-part zero-inflation
-sub-unit pooling (`alpha * (s - base_offset)` only when `s > base_offset`),
-computes damped cross-AI margins ($\gamma = 0.60$), and runs a stacked Stage-2
-`HistGradientBoosting` tree head for version attribution. The `source-classify`
+sub-unit pooling (`alpha * (s - base_offset)` only when `s > base_offset`), a
+Stage-1.5 zero-inflated hinge meta-router (`router_meta_tau`, `router_meta_w`)
+for cross-provider disambiguation, damped cross-AI margins ($\gamma = 0.60$),
+and a stacked Stage-2 `HistGradientBoosting` tree head for version attribution.
+The `source-classify`
 extra adds `pixels` and Hugging Face Hub but no Torch or Transformers. It
 always sets `watermark_truth="unknown"` and is never imported by `identify`.
 Unit and mutation tests live in `tests/test_source_classify.py`; evaluation and
